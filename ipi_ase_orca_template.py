@@ -3,12 +3,15 @@ from __future__ import annotations
 from argparse import ArgumentParser
 from dataclasses import asdict, dataclass
 import json
+import os
 from pathlib import Path
 import shutil
 import shlex
+import socket
 import subprocess
 import sys
 import time
+import tempfile
 
 
 class ValidationError(ValueError):
@@ -478,14 +481,7 @@ def _to_jsonable(config: TemplateConfig) -> dict:
     return _jsonable_value(asdict(config))
 
 
-def write_job_directory(config: TemplateConfig) -> Path:
-    validate_config(config)
-
-    job_dir = config.job.work_root / config.job.job_name
-    if config.job.clean_existing and job_dir.exists():
-        shutil.rmtree(job_dir)
-    job_dir.mkdir(parents=True, exist_ok=True)
-
+def _write_job_directory_contents(job_dir: Path, config: TemplateConfig) -> None:
     (job_dir / "input.xml").write_text(render_input_xml(config))
     (job_dir / "init.xyz").write_text(_structure_text(config))
     (job_dir / "ase_orca_client.py").write_text(render_ase_orca_client(config))
@@ -499,7 +495,45 @@ def write_job_directory(config: TemplateConfig) -> Path:
         script_path.write_text(content)
         script_path.chmod(0o755)
 
+
+def write_job_directory(config: TemplateConfig) -> Path:
+    validate_config(config)
+
+    job_dir = config.job.work_root / config.job.job_name
+    job_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(
+        dir=job_dir.parent, prefix=f".{job_dir.name}.tmp-"
+    ) as temp_root:
+        temp_dir = Path(temp_root)
+        _write_job_directory_contents(temp_dir, config)
+
+        if job_dir.exists():
+            if not config.job.clean_existing:
+                raise FileExistsError(f"{job_dir} already exists")
+            shutil.rmtree(job_dir)
+
+        temp_dir.replace(job_dir)
     return job_dir
+
+
+def _resolve_executable_token(command: str) -> str:
+    token = shlex.split(command)[0]
+    resolved = shutil.which(token)
+    if resolved is not None:
+        return resolved
+
+    path = Path(token)
+    looks_like_path = (
+        path.is_absolute()
+        or token.startswith(".")
+        or os.sep in token
+        or (os.path.altsep is not None and os.path.altsep in token)
+    )
+    if looks_like_path and path.is_file() and os.access(path, os.X_OK):
+        return str(path)
+
+    raise RuntimeError(f"orca executable was not found or is not executable: {token}")
 
 
 def check_environment(config: TemplateConfig) -> None:
@@ -508,21 +542,48 @@ def check_environment(config: TemplateConfig) -> None:
     if shutil.which("i-pi") is None:
         raise RuntimeError("i-pi was not found on PATH")
 
-    orca_command = shlex.split(config.orca.orca_command)[0]
-    if shutil.which(orca_command) is None and not Path(orca_command).exists():
-        raise RuntimeError(f"orca executable was not found: {orca_command}")
+    _resolve_executable_token(config.orca.orca_command)
 
     subprocess.run([sys.executable, "-c", "import ase"], check=True)
 
 
+def _wait_for_socket(config: TemplateConfig, timeout: float | None = None) -> None:
+    deadline = time.monotonic() + (timeout if timeout is not None else config.advanced.timeout)
+    poll_interval = 0.5
+
+    if config.job.socket_mode == "unix":
+        socket_address = f"/tmp/ipi_{config.job.socket_address}"
+        while time.monotonic() < deadline:
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                    probe.settimeout(poll_interval)
+                    probe.connect(socket_address)
+                return
+            except OSError:
+                time.sleep(poll_interval)
+        raise TimeoutError(f"timed out waiting for unix socket {socket_address}")
+
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(
+                (config.job.socket_address, config.job.socket_port), timeout=poll_interval
+            ):
+                return
+        except OSError:
+            time.sleep(poll_interval)
+    raise TimeoutError(
+        f"timed out waiting for socket {config.job.socket_address}:{config.job.socket_port}"
+    )
+
+
 def run_job(config: TemplateConfig) -> int:
-    job_dir = write_job_directory(config)
     check_environment(config)
+    job_dir = write_job_directory(config)
 
     i_pi_proc = subprocess.Popen(["i-pi", "input.xml"], cwd=job_dir)
     client_proc = None
     try:
-        time.sleep(1)
+        _wait_for_socket(config)
         client_proc = subprocess.run(
             [sys.executable, "ase_orca_client.py"],
             cwd=job_dir,

@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from xml.etree import ElementTree as ET
 
@@ -208,6 +209,102 @@ def test_write_job_directory_creates_expected_files(tmp_path):
         "README.job.md",
     ]:
         assert (job_dir / name).exists()
+
+
+def test_write_job_directory_keeps_existing_directory_on_failure(tmp_path, monkeypatch):
+    config = make_config()
+    config = replace(config, job=replace(config.job, work_root=tmp_path, job_name="demo_job"))
+
+    job_dir = tmp_path / "demo_job"
+    job_dir.mkdir()
+    sentinel = job_dir / "sentinel.txt"
+    sentinel.write_text("keep-me")
+
+    def fail_render_shell_scripts(_config):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(template, "render_shell_scripts", fail_render_shell_scripts)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        template.write_job_directory(config)
+
+    assert sentinel.read_text() == "keep-me"
+    assert not (job_dir / "input.xml").exists()
+
+
+def test_write_job_directory_writes_json_and_exec_permissions(tmp_path):
+    xyz_path = tmp_path / "structure.xyz"
+    xyz_path.write_text("1\nH\nH 0 0 0\n")
+
+    config = make_config()
+    config = replace(
+        config,
+        job=replace(config.job, work_root=tmp_path, job_name="json_job"),
+        structure=replace(config.structure, xyz_path=xyz_path, xyz_string=None),
+    )
+
+    job_dir = template.write_job_directory(config)
+    payload = json.loads((job_dir / "job_config.json").read_text())
+
+    assert payload["job"]["work_root"] == str(tmp_path)
+    assert payload["structure"]["xyz_path"] == str(xyz_path)
+    assert (job_dir / "run_all.sh").stat().st_mode & 0o777 == 0o755
+    assert (job_dir / "submit_job.sh").stat().st_mode & 0o777 == 0o755
+
+
+def test_run_job_checks_environment_before_writing_directory(monkeypatch):
+    config = make_config()
+    calls = []
+
+    def fake_check_environment(_config):
+        calls.append("check")
+        raise RuntimeError("env")
+
+    def fake_write_job_directory(_config):
+        calls.append("write")
+        return config.job.work_root / config.job.job_name
+
+    monkeypatch.setattr(template, "check_environment", fake_check_environment)
+    monkeypatch.setattr(template, "write_job_directory", fake_write_job_directory)
+
+    with pytest.raises(RuntimeError, match="env"):
+        template.run_job(config)
+
+    assert calls == ["check"]
+
+
+def test_check_environment_rejects_non_executable_orca_path(tmp_path, monkeypatch):
+    orca_path = tmp_path / "orca"
+    orca_path.write_text("#!/bin/sh\nexit 0\n")
+    orca_path.chmod(0o644)
+
+    config = make_config()
+    config = replace(config, orca=replace(config.orca, orca_command=str(orca_path)))
+
+    monkeypatch.setattr(
+        template.shutil,
+        "which",
+        lambda token: "/usr/bin/i-pi" if token == "i-pi" else None,
+    )
+    monkeypatch.setattr(template.subprocess, "run", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="orca executable"):
+        template.check_environment(config)
+
+
+def test_build_arg_parser_rejects_conflicting_modes():
+    parser = template.build_arg_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--write-only", "--run"])
+
+
+def test_main_rejects_conflicting_modes(tmp_path):
+    config = make_config()
+    config = replace(config, job=replace(config.job, work_root=tmp_path, job_name="cli_job"))
+
+    with pytest.raises(SystemExit):
+        template.main(["--write-only", "--run"], config=config)
 
 
 def test_main_write_only_returns_zero_and_creates_job(tmp_path):

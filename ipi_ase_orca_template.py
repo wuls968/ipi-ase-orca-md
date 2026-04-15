@@ -114,23 +114,23 @@ H -0.758602 0.000000 0.504284
             tau_fs=100.0,
             properties_stride=1,
             trajectory_stride=10,
-            checkpoint_stride=100,
-            prefix="run",
+            checkpoint_stride=50,
+            prefix="simulation",
         ),
         orca=OrcaSettings(
             orca_command="/Users/a0000/Library/orca_6_1_0/orca",
             orcasimpleinput="B3LYP def2-SVP TightSCF",
-            orcablocks="",
-            nprocs=4,
+            orcablocks="%pal nprocs 1 end\n%maxcore 2000",
+            nprocs=1,
             maxcore=2000,
-            label="orca",
+            label="orca_run",
             extra_keywords="",
         ),
         advanced=AdvancedSettings(
-            fix_com=True,
+            fix_com=False,
             ffsocket_pbc=False,
-            latency=0.1,
-            timeout=30.0,
+            latency=0.01,
+            timeout=600.0,
             initial_velocities="thermal",
             velocity_temperature=300.0,
             custom_xml_overrides="",
@@ -144,6 +144,12 @@ def _require_non_empty(value: str, field_name: str) -> None:
         raise ValidationError(f"{field_name} must not be empty")
 
 
+def _require_in(value: str, field_name: str, allowed: set[str]) -> None:
+    if value not in allowed:
+        options = ", ".join(sorted(allowed))
+        raise ValidationError(f"{field_name} must be one of: {options}")
+
+
 def validate_config(config: TemplateConfig) -> None:
     geometry_sources = [
         config.structure.xyz_path,
@@ -152,12 +158,16 @@ def validate_config(config: TemplateConfig) -> None:
     if not any(geometry_sources):
         raise ValidationError("geometry source must be provided")
 
+    _require_in(config.job.socket_mode.strip().lower(), "socket_mode", {"unix", "inet"})
     _require_non_empty(config.job.socket_mode, "socket_mode")
     _require_non_empty(config.orca.orca_command, "orca_command")
 
     simulation_kind = config.simulation.simulation_kind.strip().lower()
     ensemble = config.simulation.ensemble.strip().lower()
     thermostat = config.simulation.thermostat_mode.strip().lower()
+
+    _require_in(simulation_kind, "simulation_kind", {"aimd", "pimd"})
+    _require_in(ensemble, "ensemble", {"nve", "nvt"})
 
     if simulation_kind == "pimd":
         if config.simulation.nbeads < 2:

@@ -158,13 +158,13 @@ def validate_config(config: TemplateConfig) -> None:
     if not any(geometry_sources):
         raise ValidationError("geometry source must be provided")
 
-    _require_in(config.job.socket_mode.strip().lower(), "socket_mode", {"unix", "inet"})
+    _require_in(config.job.socket_mode, "socket_mode", {"unix", "inet"})
     _require_non_empty(config.job.socket_mode, "socket_mode")
     _require_non_empty(config.orca.orca_command, "orca_command")
 
-    simulation_kind = config.simulation.simulation_kind.strip().lower()
-    ensemble = config.simulation.ensemble.strip().lower()
-    thermostat = config.simulation.thermostat_mode.strip().lower()
+    simulation_kind = config.simulation.simulation_kind
+    ensemble = config.simulation.ensemble
+    thermostat = config.simulation.thermostat_mode
 
     _require_in(simulation_kind, "simulation_kind", {"aimd", "pimd"})
     _require_in(ensemble, "ensemble", {"nve", "nvt"})

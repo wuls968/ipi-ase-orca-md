@@ -22,6 +22,18 @@ def test_default_config_matches_spec():
     assert config.advanced.timeout == 600.0
 
 
+def test_default_config_validates_cleanly():
+    template.validate_config(make_config())
+
+
+def test_validation_rejects_empty_orca_command():
+    config = make_config()
+    config = replace(config, orca=replace(config.orca, orca_command=""))
+
+    with pytest.raises(template.ValidationError, match="orca_command"):
+        template.validate_config(config)
+
+
 def test_validation_requires_geometry_source():
     config = make_config()
     config = replace(
@@ -68,9 +80,10 @@ def test_validation_pimd_rejects_classical_thermostat():
 @pytest.mark.parametrize(
     ("field", "value", "match"),
     [
-        ("simulation_kind", "unsupported", "simulation_kind"),
-        ("ensemble", "invalid", "ensemble"),
-        ("socket_mode", "tcp", "socket_mode"),
+        ("simulation_kind", "PIMD", "simulation_kind"),
+        ("ensemble", "NVT", "ensemble"),
+        ("socket_mode", " UNIX ", "socket_mode"),
+        ("thermostat_mode", "PILE_G", "thermostat"),
     ],
 )
 def test_validation_rejects_invalid_enumerations(field, value, match):
@@ -82,6 +95,24 @@ def test_validation_rejects_invalid_enumerations(field, value, match):
         config = replace(config, simulation=replace(config.simulation, ensemble=value))
     elif field == "socket_mode":
         config = replace(config, job=replace(config.job, socket_mode=value))
+    elif field == "thermostat_mode":
+        config = replace(config, simulation=replace(config.simulation, thermostat_mode=value))
 
     with pytest.raises(template.ValidationError, match=match):
+        template.validate_config(config)
+
+
+def test_validation_rejects_aimd_nvt_pile_g():
+    config = make_config()
+    config = replace(
+        config,
+        simulation=replace(
+            config.simulation,
+            simulation_kind="aimd",
+            ensemble="nvt",
+            thermostat_mode="pile_g",
+        ),
+    )
+
+    with pytest.raises(template.ValidationError, match="thermostat"):
         template.validate_config(config)

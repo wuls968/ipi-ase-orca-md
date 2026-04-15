@@ -187,3 +187,34 @@ def test_render_shell_scripts_includes_submit_helper_variables():
     assert "wait_for_socket" in scripts["submit_job.sh"]
     assert "trap cleanup" in scripts["submit_job.sh"]
     assert "/tmp/ipi_orca_driver" in scripts["run_all.sh"]
+
+
+def test_write_job_directory_creates_expected_files(tmp_path):
+    config = make_config()
+    config = replace(config, job=replace(config.job, work_root=tmp_path, job_name="demo_job"))
+
+    job_dir = template.write_job_directory(config)
+
+    assert job_dir == tmp_path / "demo_job"
+    for name in [
+        "input.xml",
+        "init.xyz",
+        "ase_orca_client.py",
+        "job_config.json",
+        "run_ipi.sh",
+        "run_client.sh",
+        "run_all.sh",
+        "submit_job.sh",
+        "README.job.md",
+    ]:
+        assert (job_dir / name).exists()
+
+
+def test_main_write_only_returns_zero_and_creates_job(tmp_path):
+    config = make_config()
+    config = replace(config, job=replace(config.job, work_root=tmp_path, job_name="cli_job"))
+
+    result = template.main(["--write-only"], config=config)
+
+    assert result == 0
+    assert (tmp_path / "cli_job" / "input.xml").exists()

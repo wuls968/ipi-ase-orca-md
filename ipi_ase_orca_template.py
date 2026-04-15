@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from argparse import ArgumentParser
+from dataclasses import asdict, dataclass
+import json
 from pathlib import Path
+import shutil
 import shlex
+import subprocess
+import sys
+import time
 
 
 class ValidationError(ValueError):
@@ -446,3 +452,111 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
         "run_all.sh": run_all_sh,
         "submit_job.sh": submit_job_sh,
     }
+
+
+def _structure_text(config: TemplateConfig) -> str:
+    if config.structure.xyz_path is not None:
+        return config.structure.xyz_path.read_text()
+
+    xyz_text = config.structure.xyz_string or ""
+    return xyz_text if xyz_text.endswith("\n") else xyz_text + "\n"
+
+
+def _jsonable_value(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _jsonable_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_jsonable_value(item) for item in value]
+    if isinstance(value, list):
+        return [_jsonable_value(item) for item in value]
+    return value
+
+
+def _to_jsonable(config: TemplateConfig) -> dict:
+    return _jsonable_value(asdict(config))
+
+
+def write_job_directory(config: TemplateConfig) -> Path:
+    validate_config(config)
+
+    job_dir = config.job.work_root / config.job.job_name
+    if config.job.clean_existing and job_dir.exists():
+        shutil.rmtree(job_dir)
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    (job_dir / "input.xml").write_text(render_input_xml(config))
+    (job_dir / "init.xyz").write_text(_structure_text(config))
+    (job_dir / "ase_orca_client.py").write_text(render_ase_orca_client(config))
+    (job_dir / "job_config.json").write_text(
+        json.dumps(_to_jsonable(config), indent=2, sort_keys=True) + "\n"
+    )
+    (job_dir / "README.job.md").write_text(render_job_readme(config))
+
+    for name, content in render_shell_scripts(config).items():
+        script_path = job_dir / name
+        script_path.write_text(content)
+        script_path.chmod(0o755)
+
+    return job_dir
+
+
+def check_environment(config: TemplateConfig) -> None:
+    validate_config(config)
+
+    if shutil.which("i-pi") is None:
+        raise RuntimeError("i-pi was not found on PATH")
+
+    orca_command = shlex.split(config.orca.orca_command)[0]
+    if shutil.which(orca_command) is None and not Path(orca_command).exists():
+        raise RuntimeError(f"orca executable was not found: {orca_command}")
+
+    subprocess.run([sys.executable, "-c", "import ase"], check=True)
+
+
+def run_job(config: TemplateConfig) -> int:
+    job_dir = write_job_directory(config)
+    check_environment(config)
+
+    i_pi_proc = subprocess.Popen(["i-pi", "input.xml"], cwd=job_dir)
+    client_proc = None
+    try:
+        time.sleep(1)
+        client_proc = subprocess.run(
+            [sys.executable, "ase_orca_client.py"],
+            cwd=job_dir,
+            check=False,
+        )
+        return client_proc.returncode
+    finally:
+        if i_pi_proc.poll() is None:
+            i_pi_proc.terminate()
+            try:
+                i_pi_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                i_pi_proc.kill()
+                i_pi_proc.wait()
+
+
+def build_arg_parser() -> ArgumentParser:
+    parser = ArgumentParser()
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--write-only", action="store_true")
+    mode.add_argument("--run", action="store_true")
+    return parser
+
+
+def main(argv=None, *, config=None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    active = config if config is not None else build_default_config()
+
+    if args.run:
+        return run_job(active)
+
+    write_job_directory(active)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

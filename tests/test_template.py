@@ -150,10 +150,18 @@ def test_render_input_xml_for_pimd_nvt():
     assert "<temperature units='kelvin'> 300.0 </temperature>" in xml
     assert root.find("ffsocket") is not None
     assert system.find("forces/ffsocket") is None
+    assert system.find("forces/force[@forcefield='orca']") is not None
+    assert root.find("ffsocket[@name='orca']") is not None
+    assert system.find("forces/force").get("forcefield") == root.find("ffsocket").get("name")
     assert system.find("ensemble") is not None
     dynamics = system.find("motion/dynamics")
     assert dynamics is not None
     assert dynamics.find("timestep") is not None
+    velocities = system.find("initialize/velocities")
+    assert velocities is not None
+    assert velocities.get("mode") == "thermal"
+    assert velocities.get("units") == "kelvin"
+    assert str(make_config().advanced.velocity_temperature) in (velocities.text or "")
     properties = root.find("output/properties")
     trajectory = root.find("output/trajectory")
     assert properties is not None and properties.get("filename") is not None
@@ -178,3 +186,4 @@ def test_render_shell_scripts_includes_submit_helper_variables():
     assert "command -v" in scripts["submit_job.sh"]
     assert "wait_for_socket" in scripts["submit_job.sh"]
     assert "trap cleanup" in scripts["submit_job.sh"]
+    assert "/tmp/ipi_orca_driver" in scripts["run_all.sh"]

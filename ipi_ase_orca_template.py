@@ -210,9 +210,7 @@ def _velocities_block(config: TemplateConfig) -> str:
         return ""
 
     return (
-        "      <velocities mode='thermal'>\n"
-        f"        <temperature units='kelvin'> {config.advanced.velocity_temperature} </temperature>\n"
-        "      </velocities>\n"
+        f"      <velocities mode='thermal' units='kelvin'> {config.advanced.velocity_temperature} </velocities>\n"
     )
 
 
@@ -346,7 +344,7 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
     validate_config(config)
 
     orca_command = shlex.split(config.orca.orca_command)[0]
-    launcher_prefix = config.advanced.job_launcher_prefix.strip()
+    unix_socket_path = f"/tmp/ipi_{config.job.socket_address}"
     wait_for_socket_fn = (
         "wait_for_socket() {\n"
         "  mode=\"$1\"\n"
@@ -389,7 +387,7 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
     )
 
     socket_wait_args = (
-        f'wait_for_socket unix "{config.job.socket_address}"'
+        f'wait_for_socket unix "{unix_socket_path}"'
         if config.job.socket_mode == "unix"
         else f'wait_for_socket inet "{config.job.socket_address}" "{config.job.socket_port}"'
     )

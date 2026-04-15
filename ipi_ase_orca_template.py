@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shlex
 
 
 class ValidationError(ValueError):
@@ -232,37 +233,64 @@ def render_input_xml(config: TemplateConfig) -> str:
     velocities_block = _velocities_block(config)
     thermostat_block = _thermostat_block(config)
     custom_overrides = config.advanced.custom_xml_overrides.strip()
-    custom_xml = f"\n{custom_overrides}\n" if custom_overrides else "\n"
-
-    return (
-        "<simulation>\n"
-        f"  <output prefix='{config.simulation.prefix}'>\n"
-        f"    <properties stride='{config.simulation.properties_stride}'> properties.dat </properties>\n"
-        f"    <trajectory stride='{config.simulation.trajectory_stride}'> trajectory.xyz </trajectory>\n"
-        f"    <checkpoint stride='{config.simulation.checkpoint_stride}'> checkpoint.chk </checkpoint>\n"
-        "  </output>\n"
-        f"  <total_steps> {config.simulation.total_steps} </total_steps>\n"
-        f"  <prng seed='{config.simulation.seed}'/>\n"
-        "  <system>\n"
-        f"    <initialize nbeads='{config.simulation.nbeads}'>\n"
-        "      <file mode='xyz'> init.xyz </file>\n"
-        f"{velocities_block}"
-        "    </initialize>\n"
-        "    <forces>\n"
-        f"      {_socket_block(config)}\n"
-        "    </forces>\n"
-        "    <motion mode='dynamics'>\n"
-        f"      <dynamics mode='{config.simulation.ensemble}'>\n"
-        f"        <ensemble mode='{config.simulation.ensemble}'>\n"
-        f"          <temperature units='kelvin'> {config.simulation.temperature} </temperature>\n"
-        f"{thermostat_block}"
-        "        </ensemble>\n"
-        "      </dynamics>\n"
-        "    </motion>\n"
-        "  </system>"
-        f"{custom_xml}"
-        "</simulation>\n"
+    lines = [
+        "<simulation>",
+        f"  <output prefix='{config.simulation.prefix}'>",
+        (
+            f"    <properties stride='{config.simulation.properties_stride}' "
+            "filename='out'> [ step, time{femtosecond}, "
+            "potential{electronvolt}, temperature{kelvin} ] </properties>"
+        ),
+        (
+            f"    <trajectory stride='{config.simulation.trajectory_stride}' "
+            "filename='pos'> positions{angstrom} </trajectory>"
+        ),
+        f"    <checkpoint stride='{config.simulation.checkpoint_stride}' filename='chk'/>",
+        "  </output>",
+        f"  <total_steps> {config.simulation.total_steps} </total_steps>",
+        "  <prng>",
+        f"    <seed> {config.simulation.seed} </seed>",
+        "  </prng>",
+        f"  {_socket_block(config)}",
+        "  <system>",
+        f"    <initialize nbeads='{config.simulation.nbeads}'>",
+        "      <file mode='xyz'> init.xyz </file>",
+    ]
+    if velocities_block:
+        lines.append(velocities_block.rstrip("\n"))
+    lines.extend(
+        [
+            "    </initialize>",
+            "    <forces>",
+            "      <force forcefield='orca'></force>",
+            "    </forces>",
+            "    <motion mode='dynamics'>",
+        ]
     )
+    if config.advanced.fix_com:
+        lines.append("      <fixcom> True </fixcom>")
+    lines.extend(
+        [
+            f"      <dynamics mode='{config.simulation.ensemble}'>",
+            f"        <timestep units='femtosecond'> {config.simulation.timestep_fs} </timestep>",
+        ]
+    )
+    if thermostat_block:
+        lines.append(thermostat_block.rstrip("\n"))
+    lines.extend(
+        [
+            "      </dynamics>",
+            "    </motion>",
+            "    <ensemble>",
+            f"      <temperature units='kelvin'> {config.simulation.temperature} </temperature>",
+            "    </ensemble>",
+            "  </system>",
+        ]
+    )
+    if custom_overrides:
+        lines.append(custom_overrides)
+    lines.append("</simulation>")
+    return "\n".join(lines) + "\n"
 
 
 def render_ase_orca_client(config: TemplateConfig) -> str:
@@ -317,6 +345,55 @@ def render_job_readme(config: TemplateConfig) -> str:
 def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
     validate_config(config)
 
+    orca_command = shlex.split(config.orca.orca_command)[0]
+    launcher_prefix = config.advanced.job_launcher_prefix.strip()
+    wait_for_socket_fn = (
+        "wait_for_socket() {\n"
+        "  mode=\"$1\"\n"
+        "  target=\"$2\"\n"
+        "  port=\"${3:-}\"\n"
+        "  python - \"$mode\" \"$target\" \"$port\" <<'PY'\n"
+        "import os\n"
+        "import socket\n"
+        "import sys\n"
+        "import time\n"
+        "\n"
+        "mode, target, port = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+        "deadline = time.time() + 120\n"
+        "if mode == 'unix':\n"
+        "    while time.time() < deadline:\n"
+        "        if os.path.exists(target):\n"
+        "            raise SystemExit(0)\n"
+        "        time.sleep(1)\n"
+        "else:\n"
+        "    host = target\n"
+        "    port = int(port)\n"
+        "    while time.time() < deadline:\n"
+        "        try:\n"
+        "            with socket.create_connection((host, port), timeout=1):\n"
+        "                raise SystemExit(0)\n"
+        "        except OSError:\n"
+        "            time.sleep(1)\n"
+        "raise SystemExit(1)\n"
+        "PY\n"
+        "}\n"
+    )
+
+    cleanup_fn = (
+        "cleanup() {\n"
+        '  if [ -n "${IPI_PID:-}" ]; then\n'
+        '    kill "$IPI_PID" 2>/dev/null || true\n'
+        '    wait "$IPI_PID" 2>/dev/null || true\n'
+        "  fi\n"
+        "}\n"
+    )
+
+    socket_wait_args = (
+        f'wait_for_socket unix "{config.job.socket_address}"'
+        if config.job.socket_mode == "unix"
+        else f'wait_for_socket inet "{config.job.socket_address}" "{config.job.socket_port}"'
+    )
+
     run_ipi_sh = (
         "#!/bin/sh\n"
         "set -eu\n"
@@ -330,10 +407,13 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
     run_all_sh = (
         "#!/bin/sh\n"
         "set -eu\n"
+        f"{wait_for_socket_fn}\n"
+        f"{cleanup_fn}"
+        "trap cleanup INT TERM EXIT\n"
         "mkdir -p logs\n"
         "sh run_ipi.sh > logs/ipi.log 2>&1 &\n"
         "IPI_PID=$!\n"
-        "sleep 2\n"
+        f"{socket_wait_args}\n"
         "sh run_client.sh > logs/client.log 2>&1\n"
         'wait "$IPI_PID"\n'
     )
@@ -344,19 +424,22 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
         'CONDA_ENV="ipi"\n'
         f'ORCA_COMMAND="{config.orca.orca_command}"\n'
         f'JOB_LAUNCHER_PREFIX="${{JOB_LAUNCHER_PREFIX:-{config.advanced.job_launcher_prefix}}}"\n\n'
+        f"ORCA_COMMAND_BIN={orca_command!r}\n"
+        f"{wait_for_socket_fn}\n"
+        f"{cleanup_fn}"
+        "trap cleanup INT TERM EXIT\n"
         'if [ -f "$CONDA_SH" ]; then\n'
         '  . "$CONDA_SH"\n'
         'fi\n'
         'conda activate "$CONDA_ENV"\n\n'
         "mkdir -p logs\n"
-        'test -x "$ORCA_COMMAND"\n'
+        'command -v "$ORCA_COMMAND_BIN" >/dev/null\n'
         'python -c "import ase"\n'
         "i-pi input.xml > logs/ipi.log 2>&1 &\n"
         "IPI_PID=$!\n"
-        "sleep 2\n"
-        "${JOB_LAUNCHER_PREFIX} python ase_orca_client.py > logs/client.log 2>&1\n"
-        'kill "$IPI_PID" 2>/dev/null || true\n'
-        'wait "$IPI_PID" 2>/dev/null || true\n'
+        f"{socket_wait_args}\n"
+        'sh -c "${JOB_LAUNCHER_PREFIX} python ase_orca_client.py" > logs/client.log 2>&1\n'
+        'wait "$IPI_PID"\n'
     )
 
     return {

@@ -1,4 +1,5 @@
 from dataclasses import replace
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -140,10 +141,23 @@ def test_render_input_xml_for_aimd_nvt():
 
 def test_render_input_xml_for_pimd_nvt():
     xml = template.render_input_xml(make_config())
+    root = ET.fromstring(xml)
+    system = root.find("system")
+    assert system is not None
 
     assert "<initialize nbeads='16'>" in xml
     assert "<thermostat mode='pile_g'>" in xml
     assert "<temperature units='kelvin'> 300.0 </temperature>" in xml
+    assert root.find("ffsocket") is not None
+    assert system.find("forces/ffsocket") is None
+    assert system.find("ensemble") is not None
+    dynamics = system.find("motion/dynamics")
+    assert dynamics is not None
+    assert dynamics.find("timestep") is not None
+    properties = root.find("output/properties")
+    trajectory = root.find("output/trajectory")
+    assert properties is not None and properties.get("filename") is not None
+    assert trajectory is not None and trajectory.get("filename") is not None
 
 
 def test_render_ase_client_contains_orca_profile_and_socketclient():
@@ -161,3 +175,6 @@ def test_render_shell_scripts_includes_submit_helper_variables():
     assert 'CONDA_ENV="ipi"' in scripts["submit_job.sh"]
     assert "JOB_LAUNCHER_PREFIX=" in scripts["submit_job.sh"]
     assert "ase_orca_client.py" in scripts["submit_job.sh"]
+    assert "command -v" in scripts["submit_job.sh"]
+    assert "wait_for_socket" in scripts["submit_job.sh"]
+    assert "trap cleanup" in scripts["submit_job.sh"]

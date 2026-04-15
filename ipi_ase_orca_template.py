@@ -187,14 +187,20 @@ def _socket_block(config: TemplateConfig) -> str:
 
     if config.job.socket_mode == "unix":
         return (
-            f"<ffsocket mode='unix' address='{config.job.socket_address}' "
-            f"pbc='{pbc}' latency='{latency}' timeout='{timeout}'/>"
+            f"<ffsocket mode='unix' name='orca' pbc='{pbc}'>\n"
+            f"      <address>{config.job.socket_address}</address>\n"
+            f"      <latency>{latency}</latency>\n"
+            f"      <timeout>{timeout}</timeout>\n"
+            "    </ffsocket>"
         )
 
     return (
-        f"<ffsocket mode='inet' address='{config.job.socket_address}' "
-        f"port='{config.job.socket_port}' pbc='{pbc}' latency='{latency}' "
-        f"timeout='{timeout}'/>"
+        f"<ffsocket mode='inet' name='orca' pbc='{pbc}'>\n"
+        f"      <address>{config.job.socket_address}</address>\n"
+        f"      <port>{config.job.socket_port}</port>\n"
+        f"      <latency>{latency}</latency>\n"
+        f"      <timeout>{timeout}</timeout>\n"
+        "    </ffsocket>"
     )
 
 
@@ -277,7 +283,7 @@ def render_ase_orca_client(config: TemplateConfig) -> str:
         f"profile = OrcaProfile(command={config.orca.orca_command!r})\n"
         "calc = ORCA(\n"
         "    profile=profile,\n"
-        "    directory='.',\n"
+        f"    directory={config.orca.label!r},\n"
         f"    charge={config.structure.charge},\n"
         f"    mult={config.structure.multiplicity},\n"
         f"    orcasimpleinput={config.orca.orcasimpleinput!r},\n"
@@ -348,7 +354,7 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
         "i-pi input.xml > logs/ipi.log 2>&1 &\n"
         "IPI_PID=$!\n"
         "sleep 2\n"
-        "python ase_orca_client.py > logs/client.log 2>&1\n"
+        "${JOB_LAUNCHER_PREFIX} python ase_orca_client.py > logs/client.log 2>&1\n"
         'kill "$IPI_PID" 2>/dev/null || true\n'
         'wait "$IPI_PID" 2>/dev/null || true\n'
     )

@@ -1,1 +1,10 @@
 .worktrees/
+__pycache__/
+.pytest_cache/
+*.pyc
+jobs/
+*.log
+*.out
+*.err
+*.pid
+orca_run/

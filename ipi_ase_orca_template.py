@@ -14,6 +14,9 @@ import time
 import tempfile
 
 
+DEFAULT_NONPERIODIC_CELL_ANGSTROM = 15.0
+
+
 class ValidationError(ValueError):
     """Raised when the template configuration is internally inconsistent."""
 
@@ -167,6 +170,8 @@ def validate_config(config: TemplateConfig) -> None:
     ]
     if not any(geometry_sources):
         raise ValidationError("geometry source must be provided")
+    if config.structure.pbc and config.structure.cell is None:
+        raise ValidationError("cell must be provided when pbc is True")
 
     _require_in(config.job.socket_mode, "socket_mode", {"unix", "inet"})
     _require_non_empty(config.job.socket_mode, "socket_mode")
@@ -214,6 +219,10 @@ def _socket_block(config: TemplateConfig) -> str:
     )
 
 
+def _unix_socket_path(config: TemplateConfig) -> Path:
+    return Path(f"/tmp/ipi_{config.job.socket_address}")
+
+
 def _velocities_block(config: TemplateConfig) -> str:
     if config.advanced.initial_velocities != "thermal":
         return ""
@@ -221,6 +230,15 @@ def _velocities_block(config: TemplateConfig) -> str:
     return (
         f"      <velocities mode='thermal' units='kelvin'> {config.advanced.velocity_temperature} </velocities>\n"
     )
+
+
+def _cell_block(config: TemplateConfig) -> str:
+    cell = config.structure.cell
+    if cell is None:
+        cell = (DEFAULT_NONPERIODIC_CELL_ANGSTROM,) * 3
+
+    a, b, c = (float(axis) for axis in cell)
+    return f"      <cell mode='abc' units='angstrom'> [ {a}, {b}, {c} ] </cell>\n"
 
 
 def _thermostat_block(config: TemplateConfig) -> str:
@@ -232,6 +250,16 @@ def _thermostat_block(config: TemplateConfig) -> str:
         f"        <tau units='femtosecond'> {config.simulation.tau_fs} </tau>\n"
         "      </thermostat>\n"
     )
+
+
+def _orca_simpleinput(config: TemplateConfig) -> str:
+    tokens = config.orca.orcasimpleinput.split()
+    extra_tokens = config.orca.extra_keywords.split()
+    has_engrad = any(token.lower() == "engrad" for token in tokens + extra_tokens)
+    merged = tokens + extra_tokens
+    if not has_engrad:
+        merged.append("Engrad")
+    return " ".join(merged)
 
 
 def render_input_xml(config: TemplateConfig) -> str:
@@ -262,6 +290,7 @@ def render_input_xml(config: TemplateConfig) -> str:
         "  <system>",
         f"    <initialize nbeads='{config.simulation.nbeads}'>",
         "      <file mode='xyz'> init.xyz </file>",
+        _cell_block(config).rstrip("\n"),
     ]
     if velocities_block:
         lines.append(velocities_block.rstrip("\n"))
@@ -321,7 +350,7 @@ def render_ase_orca_client(config: TemplateConfig) -> str:
         f"    directory={config.orca.label!r},\n"
         f"    charge={config.structure.charge},\n"
         f"    mult={config.structure.multiplicity},\n"
-        f"    orcasimpleinput={config.orca.orcasimpleinput!r},\n"
+        f"    orcasimpleinput={_orca_simpleinput(config)!r},\n"
         f"    orcablocks={config.orca.orcablocks!r},\n"
         ")\n"
         "atoms = read('init.xyz')\n"
@@ -353,7 +382,7 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
     validate_config(config)
 
     orca_command = shlex.split(config.orca.orca_command)[0]
-    unix_socket_path = f"/tmp/ipi_{config.job.socket_address}"
+    unix_socket_path = str(_unix_socket_path(config))
     wait_for_socket_fn = (
         "wait_for_socket() {\n"
         "  mode=\"$1\"\n"
@@ -370,6 +399,7 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
         "if mode == 'unix':\n"
         "    while time.time() < deadline:\n"
         "        if os.path.exists(target):\n"
+        "            time.sleep(1)\n"
         "            raise SystemExit(0)\n"
         "        time.sleep(1)\n"
         "else:\n"
@@ -392,6 +422,7 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
         '    kill "$IPI_PID" 2>/dev/null || true\n'
         '    wait "$IPI_PID" 2>/dev/null || true\n'
         "  fi\n"
+        f'  rm -f "{unix_socket_path}"\n'
         "}\n"
     )
 
@@ -418,6 +449,7 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
         f"{cleanup_fn}"
         "trap cleanup INT TERM EXIT\n"
         "mkdir -p logs\n"
+        f'rm -f "{unix_socket_path}"\n'
         "sh run_ipi.sh > logs/ipi.log 2>&1 &\n"
         "IPI_PID=$!\n"
         f"{socket_wait_args}\n"
@@ -440,6 +472,7 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
         'fi\n'
         'conda activate "$CONDA_ENV"\n\n'
         "mkdir -p logs\n"
+        f'rm -f "{unix_socket_path}"\n'
         'command -v "$ORCA_COMMAND_BIN" >/dev/null\n'
         'python -c "import ase"\n'
         "i-pi input.xml > logs/ipi.log 2>&1 &\n"
@@ -536,6 +569,15 @@ def _resolve_executable_token(command: str) -> str:
     raise RuntimeError(f"orca executable was not found or is not executable: {token}")
 
 
+def _prepare_socket_path(config: TemplateConfig) -> None:
+    if config.job.socket_mode != "unix":
+        return
+
+    socket_path = _unix_socket_path(config)
+    if socket_path.exists():
+        socket_path.unlink()
+
+
 def check_environment(config: TemplateConfig) -> None:
     validate_config(config)
 
@@ -552,7 +594,7 @@ def _wait_for_socket(config: TemplateConfig, timeout: float | None = None) -> No
     poll_interval = 0.5
 
     if config.job.socket_mode == "unix":
-        socket_address = f"/tmp/ipi_{config.job.socket_address}"
+        socket_address = str(_unix_socket_path(config))
         while time.monotonic() < deadline:
             try:
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
@@ -579,6 +621,7 @@ def _wait_for_socket(config: TemplateConfig, timeout: float | None = None) -> No
 def run_job(config: TemplateConfig) -> int:
     check_environment(config)
     job_dir = write_job_directory(config)
+    _prepare_socket_path(config)
 
     i_pi_proc = subprocess.Popen(["i-pi", "input.xml"], cwd=job_dir)
     client_proc = None
@@ -589,7 +632,15 @@ def run_job(config: TemplateConfig) -> int:
             cwd=job_dir,
             check=False,
         )
-        return client_proc.returncode
+        if client_proc.returncode != 0:
+            return client_proc.returncode
+        grace_timeout = max(5.0, min(config.advanced.timeout, 30.0))
+        try:
+            return i_pi_proc.wait(timeout=grace_timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"i-pi did not exit cleanly within {grace_timeout:.1f}s after the client finished"
+            ) from exc
     finally:
         if i_pi_proc.poll() is None:
             i_pi_proc.terminate()
@@ -598,6 +649,7 @@ def run_job(config: TemplateConfig) -> int:
             except subprocess.TimeoutExpired:
                 i_pi_proc.kill()
                 i_pi_proc.wait()
+        _prepare_socket_path(config)
 
 
 def build_arg_parser() -> ArgumentParser:

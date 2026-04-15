@@ -47,6 +47,17 @@ def test_validation_requires_geometry_source():
         template.validate_config(config)
 
 
+def test_validation_requires_cell_for_periodic_structure():
+    config = make_config()
+    config = replace(
+        config,
+        structure=replace(config.structure, pbc=True, cell=None),
+    )
+
+    with pytest.raises(template.ValidationError, match="cell"):
+        template.validate_config(config)
+
+
 def test_validation_pimd_requires_at_least_two_beads():
     config = make_config()
     config = replace(
@@ -140,6 +151,17 @@ def test_render_input_xml_for_aimd_nvt():
     assert "<thermostat mode='svr'>" in xml
 
 
+def test_render_input_xml_adds_vacuum_cell_for_nonperiodic_system():
+    root = ET.fromstring(template.render_input_xml(make_config()))
+
+    cell = root.find("system/initialize/cell")
+
+    assert cell is not None
+    assert cell.get("mode") == "abc"
+    assert cell.get("units") == "angstrom"
+    assert "15.0" in (cell.text or "")
+
+
 def test_render_input_xml_for_pimd_nvt():
     xml = template.render_input_xml(make_config())
     root = ET.fromstring(xml)
@@ -177,6 +199,29 @@ def test_render_ase_client_contains_orca_profile_and_socketclient():
     assert "OrcaProfile(command=" in client_script
 
 
+def test_render_ase_client_requests_engrad_for_md():
+    client_script = template.render_ase_orca_client(make_config())
+
+    assert "Engrad" in client_script
+
+
+def test_render_ase_client_merges_extra_keywords_without_duplicate_engrad():
+    config = make_config()
+    config = replace(
+        config,
+        orca=replace(
+            config.orca,
+            orcasimpleinput="B3LYP def2-SVP TightSCF engrad",
+            extra_keywords="D3BJ",
+        ),
+    )
+
+    client_script = template.render_ase_orca_client(config)
+
+    assert "D3BJ" in client_script
+    assert client_script.lower().count("engrad") == 1
+
+
 def test_render_shell_scripts_includes_submit_helper_variables():
     scripts = template.render_shell_scripts(make_config())
 
@@ -188,6 +233,13 @@ def test_render_shell_scripts_includes_submit_helper_variables():
     assert "wait_for_socket" in scripts["submit_job.sh"]
     assert "trap cleanup" in scripts["submit_job.sh"]
     assert "/tmp/ipi_orca_driver" in scripts["run_all.sh"]
+
+
+def test_render_shell_scripts_remove_stale_unix_socket():
+    scripts = template.render_shell_scripts(make_config())
+
+    assert 'rm -f "/tmp/ipi_orca_driver"' in scripts["run_all.sh"]
+    assert 'rm -f "/tmp/ipi_orca_driver"' in scripts["submit_job.sh"]
 
 
 def test_write_job_directory_creates_expected_files(tmp_path):
@@ -271,6 +323,54 @@ def test_run_job_checks_environment_before_writing_directory(monkeypatch):
         template.run_job(config)
 
     assert calls == ["check"]
+
+
+def test_prepare_socket_path_removes_stale_unix_socket(tmp_path, monkeypatch):
+    config = make_config()
+    stale_socket = tmp_path / "ipi_orca_driver"
+    stale_socket.write_text("stale")
+
+    monkeypatch.setattr(template, "_unix_socket_path", lambda _config: stale_socket)
+
+    template._prepare_socket_path(config)
+
+    assert not stale_socket.exists()
+
+
+def test_run_job_returns_nonzero_if_ipi_exits_with_error(monkeypatch, tmp_path):
+    config = make_config()
+
+    class FakeIpiProc:
+        def __init__(self):
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 7
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    fake_ipi_proc = FakeIpiProc()
+
+    monkeypatch.setattr(template, "check_environment", lambda _config: None)
+    monkeypatch.setattr(template, "write_job_directory", lambda _config: tmp_path)
+    monkeypatch.setattr(template, "_prepare_socket_path", lambda _config: None)
+    monkeypatch.setattr(template, "_wait_for_socket", lambda _config: None)
+    monkeypatch.setattr(template.subprocess, "Popen", lambda *args, **kwargs: fake_ipi_proc)
+    monkeypatch.setattr(
+        template.subprocess,
+        "run",
+        lambda *args, **kwargs: type("Result", (), {"returncode": 0})(),
+    )
+
+    assert template.run_job(config) == 7
 
 
 def test_check_environment_rejects_non_executable_orca_path(tmp_path, monkeypatch):

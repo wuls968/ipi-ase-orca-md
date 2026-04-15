@@ -14,17 +14,23 @@ This path is required because ASE's ORCA calculator is not a native long-lived i
 
 The template is intended to run inside the `conda` environment named `ipi`.
 
-If `ase` and `pytest` are missing, install them with:
+If `ase` is missing, install it with:
 
 ```sh
 conda activate ipi
-python -m pip install ase pytest
+python -m pip install ase
 ```
 
 If `pip` is restricted by your environment management policy, the equivalent conda-forge install is:
 
 ```sh
-conda install -n ipi -c conda-forge ase pytest
+conda install -n ipi -c conda-forge ase
+```
+
+`pytest` is only needed for the local test suite:
+
+```sh
+conda run -n ipi python -m pip install pytest
 ```
 
 ## Usage
@@ -42,10 +48,18 @@ python ipi_ase_orca_template.py --write-only
 python ipi_ase_orca_template.py --run
 ```
 
-Each generated job directory includes the core files below:
+For non-periodic molecules with `pbc=False` and `cell=None`, the template writes a default `15 x 15 x 15` angstrom cubic cell so i-PI can initialize cleanly. Set `structure.cell` explicitly for larger systems or periodic runs.
+
+The generated ASE ORCA client also appends `Engrad` automatically when it is missing, so MD jobs request forces by default. Any `extra_keywords` values are appended to the same ORCA simple-input line.
+
+Each generated job directory includes:
 
 - `input.xml`
+- `init.xyz`
 - `ase_orca_client.py`
+- `job_config.json`
+- `run_ipi.sh`
+- `run_client.sh`
 - `submit_job.sh`
 - `run_all.sh`
 - `README.job.md`

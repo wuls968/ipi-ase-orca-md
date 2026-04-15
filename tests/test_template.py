@@ -116,3 +116,48 @@ def test_validation_rejects_aimd_nvt_pile_g():
 
     with pytest.raises(template.ValidationError, match="thermostat"):
         template.validate_config(config)
+
+
+def test_render_input_xml_for_aimd_nvt():
+    config = make_config()
+    config = replace(
+        config,
+        simulation=replace(
+            config.simulation,
+            simulation_kind="aimd",
+            ensemble="nvt",
+            nbeads=1,
+            thermostat_mode="svr",
+        ),
+    )
+
+    xml = template.render_input_xml(config)
+
+    assert "<initialize nbeads='1'>" in xml
+    assert "<dynamics mode='nvt'>" in xml
+    assert "<thermostat mode='svr'>" in xml
+
+
+def test_render_input_xml_for_pimd_nvt():
+    xml = template.render_input_xml(make_config())
+
+    assert "<initialize nbeads='16'>" in xml
+    assert "<thermostat mode='pile_g'>" in xml
+    assert "<temperature units='kelvin'> 300.0 </temperature>" in xml
+
+
+def test_render_ase_client_contains_orca_profile_and_socketclient():
+    client_script = template.render_ase_orca_client(make_config())
+
+    assert "from ase.calculators.orca import ORCA, OrcaProfile" in client_script
+    assert "SocketClient" in client_script
+    assert "OrcaProfile(command=" in client_script
+
+
+def test_render_shell_scripts_includes_submit_helper_variables():
+    scripts = template.render_shell_scripts(make_config())
+
+    assert "submit_job.sh" in scripts
+    assert 'CONDA_ENV="ipi"' in scripts["submit_job.sh"]
+    assert "JOB_LAUNCHER_PREFIX=" in scripts["submit_job.sh"]
+    assert "ase_orca_client.py" in scripts["submit_job.sh"]

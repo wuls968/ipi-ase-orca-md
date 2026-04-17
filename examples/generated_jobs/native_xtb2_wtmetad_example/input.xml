@@ -1,0 +1,54 @@
+<simulation>
+  <output prefix='native_xtb2_wtmetad_example'>
+    <properties stride='50' filename='out'> [ step, time{femtosecond}, potential{electronvolt}, temperature{kelvin} ] </properties>
+    <trajectory stride='100' filename='pos'> positions{angstrom} </trajectory>
+    <checkpoint stride='500' filename='chk'/>
+  </output>
+  <total_steps> 120 </total_steps>
+  <prng>
+    <seed> 12345 </seed>
+  </prng>
+  <ffsocket mode='unix' name='orca' pbc='false'>
+      <address>orca_driver</address>
+      <latency>0.01</latency>
+      <timeout>600.0</timeout>
+    </ffsocket>
+  <ffplumed name='plumed'>
+    <file mode='xyz' units='angstrom'> init.xyz </file>
+    <plumed_dat> plumed.dat </plumed_dat>
+    <plumed_step> 0 </plumed_step>
+    <compute_work> True </compute_work>
+    <plumed_extras> [ theta, metad.bias ] </plumed_extras>
+  </ffplumed>
+  <system>
+    <initialize nbeads='1'>
+      <file mode='xyz' units='angstrom'> init.xyz </file>
+      <cell mode='abc' units='angstrom'> [ 15.0, 15.0, 15.0 ] </cell>
+    </initialize>
+    <forces>
+      <force forcefield='orca'></force>
+    </forces>
+    <motion mode='dynamics'>
+      <fixcom> True </fixcom>
+      <dynamics mode='nvt'>
+        <timestep units='femtosecond'> 1.0 </timestep>
+      <thermostat mode='langevin'>
+        <tau units='femtosecond'> 10.0 </tau>
+      </thermostat>
+      </dynamics>
+    </motion>
+    <ensemble>
+      <temperature units='kelvin'> 300.0 </temperature>
+      <bias>
+        <force forcefield='plumed' nbeads='1'>
+          <interpolate_extras> [ theta, metad.bias ] </interpolate_extras>
+        </force>
+      </bias>
+    </ensemble>
+  </system>
+  <smotion mode='metad'>
+    <metad>
+      <metaff> [ plumed ] </metaff>
+    </metad>
+  </smotion>
+</simulation>

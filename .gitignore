@@ -1,6 +1,7 @@
 .worktrees/
 __pycache__/
 .pytest_cache/
+.DS_Store
 *.pyc
 jobs/
 *.log
@@ -8,3 +9,13 @@ jobs/
 *.err
 *.pid
 orca_run/
+examples/generated_jobs/*
+!examples/generated_jobs/native_xtb2_wtmetad_example/
+!examples/generated_jobs/native_xtb2_wtmetad_example/**
+!examples/generated_jobs/native_xtb2_wtmetad_example/logs/
+!examples/generated_jobs/native_xtb2_wtmetad_example/logs/*.log
+!examples/generated_jobs/native_xtb2_wtmetad_example/*.out
+!examples/generated_jobs/native_xtb2_wtmetad_example/orca_native_xtb2/
+!examples/generated_jobs/native_xtb2_wtmetad_example/orca_native_xtb2/*.out
+.tmp_native_xtb2_smoke.inp
+.tmp_native_xtb2_smoke_run/

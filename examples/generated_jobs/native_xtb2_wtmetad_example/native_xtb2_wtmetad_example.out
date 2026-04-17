@@ -1,0 +1,7 @@
+# column   1     --> step : The current simulation time step.
+# column   2     --> time{femtosecond} : The elapsed simulation time.
+# column   3     --> potential{electronvolt} : The physical system potential energy.
+# column   4     --> temperature{kelvin} : The current temperature, as obtained from the MD kinetic energy.
+    0.00000000e+00     0.00000000e+00    -1.37846691e+02     1.00000000e+02   
+    5.00000000e+01     5.00000000e+01    -1.37962796e+02     2.00849440e+02   
+    1.00000000e+02     1.00000000e+02    -1.37938997e+02     4.71438156e+02   

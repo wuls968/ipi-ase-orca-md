@@ -1,0 +1,168 @@
++++ Loading the PLUMED kernel runtime +++
++++ PLUMED_KERNEL="<conda-env>/lib/libplumedKernel.dylib" +++
+PLUMED: PLUMED is starting
+PLUMED: Version: 2.9.2 (git: Unknown) compiled on Sep  4 2024 at 12:28:06
+PLUMED: Please cite these papers when using PLUMED [1][2]
+PLUMED: For further information see the PLUMED web page at http://www.plumed.org
+PLUMED: Root: <conda-env>/lib/plumed
+PLUMED: For installed feature, see <conda-env>/lib/plumed/src/config/config.txt
+PLUMED: Molecular dynamics engine: i-pi
+PLUMED: Precision of reals: 8
+PLUMED: Running over 1 node
+PLUMED: Number of threads: 1
+PLUMED: Cache line size: 512
+PLUMED: Number of atoms: 3
+PLUMED: File suffix: 
+PLUMED: FILE: plumed.dat
+PLUMED: Action UNITS
+PLUMED:   with label @0
+PLUMED:   length: A = 0.1 nm
+PLUMED:   energy: eV = 96.4853 kj/mol
+PLUMED:   time: fs = 0.001 ps
+PLUMED:   charge: e
+PLUMED:   mass: amu
+PLUMED:   using physical units
+PLUMED:   inside PLUMED, Boltzmann constant is 8.61733e-05
+PLUMED: Action ANGLE
+PLUMED:   with label theta
+PLUMED:   between atoms 2 1 3
+PLUMED:   using periodic boundary conditions
+PLUMED: Action METAD
+PLUMED:   with label metad
+PLUMED:   with arguments theta
+PLUMED:   added component to this action:  metad.bias 
+PLUMED:   Gaussian width  0.080000  Gaussian height 0.001000
+PLUMED:   Gaussian deposition pace 100
+PLUMED:   Gaussian file HILLS
+PLUMED:   Well-Tempered Bias Factor 10.000000
+PLUMED:   Hills relaxation time (tau) 23266804.295745
+PLUMED:   KbT 0.025852
+PLUMED:   Bibliography [3][4]
+PLUMED: Action PRINT
+PLUMED:   with label @3
+PLUMED:   with stride 50
+PLUMED:   with arguments theta metad.bias
+PLUMED:   on file COLVAR
+PLUMED:   with format  %f
+PLUMED: END FILE: plumed.dat
+
+ ____       ____       ____       ____
+/    \     /    \     /    \     /    \
+|  #################################  |
+\__#_/     \____/     \____/     \_#__/
+   #    _        _______  _____    #
+   #   (_)      |_   __ \|_   _|   #      -*-   v 3.1.12  -*-
+   #   __  ______ | |__) | | |     #
+   Y  [  ||______||  ___/  | |     #      A Universal Force Engine
+  0 0  | |       _| |_    _| |_    #
+   #  [___]     |_____|  |_____|   #
+ __#_       ____       ____       _#__
+/  # \     /    \     /    \     / #  \
+|  #################################  |
+\____/     \____/     \____/     \____/
+
+    
+# Unable to retrieve Git information.
+#
+# Simulation information:
+#           Machine Name: Unknown
+#      Working Directory: <repo-root>/examples/generated_jobs/native_xtb2_wtmetad_example
+#          Date and Time: 2026-04-17 10:22:05
+
+ @system: Initializing system object 
+ @simulation: Initializing simulation object 
+@ RANDOM SEED: The seed used in this calculation was 12345
+ @init_file: Initializing from file init.xyz. Dimension: length, units: angstrom, cell_units: automatic
+ @init_file: Initializing from file init.xyz. Dimension: length, units: automatic, cell_units: automatic
+ @init_file: Initializing from file init.xyz. Dimension: length, units: automatic, cell_units: automatic
+ @init_file: Initializing from file init.xyz. Dimension: length, units: automatic, cell_units: automatic
+ !W! Momenta not specified in initialize. Will start with zero velocity if they are not specified in beads.
+ --- begin input file content ---
+
+  <simulation>
+    <output prefix='native_xtb2_wtmetad_example'>
+      <properties stride='50' filename='out'>[ step, time{femtosecond}, potential{electronvolt}, temperature{kelvin} ]</properties>
+      <trajectory stride='100' filename='pos'>positions{angstrom}</trajectory>
+      <checkpoint stride='500' filename='chk'>
+      </checkpoint>
+    </output>
+    <total_steps>120</total_steps>
+    <prng>
+      <seed>12345</seed>
+    </prng>
+    <ffsocket mode='unix' name='orca' pbc='false'>
+      <address>orca_driver</address>
+      <latency>0.01</latency>
+      <timeout>600.0</timeout>
+    </ffsocket>
+    <ffplumed name='plumed'>
+      <file mode='xyz' units='angstrom'>init.xyz</file>
+      <plumed_dat>plumed.dat</plumed_dat>
+      <plumed_step>0</plumed_step>
+      <compute_work>True</compute_work>
+      <plumed_extras>[ theta, metad.bias ]</plumed_extras>
+    </ffplumed>
+    <system>
+      <initialize nbeads='1'>
+        <file mode='xyz' units='angstrom'>init.xyz</file>
+        <cell mode='abc' units='angstrom'>[ 15.0, 15.0, 15.0 ]</cell>
+      </initialize>
+      <forces>
+        <force forcefield='orca'>
+        </force>
+      </forces>
+      <motion mode='dynamics'>
+        <fixcom>True</fixcom>
+        <dynamics mode='nvt'>
+          <timestep units='femtosecond'>1.0</timestep>
+          <thermostat mode='langevin'>
+            <tau units='femtosecond'>10.0</tau>
+          </thermostat>
+        </dynamics>
+      </motion>
+      <ensemble>
+        <temperature units='kelvin'>300.0</temperature>
+        <bias>
+          <force forcefield='plumed' nbeads='1'>
+            <interpolate_extras>[ theta, metad.bias ]</interpolate_extras>
+          </force>
+        </bias>
+      </ensemble>
+    </system>
+    <smotion mode='metad'>
+      <metad>
+        <metaff>[ plumed ]</metaff>
+      </metad>
+    </smotion>
+  </simulation>
+ ---  end input file content  ---
+ @system.bind: Binding the forces 
+ @interfacesocket.open: Created unix socket with address orca_driver
+ @ForceField (orca): Starting the polling thread main loop.
+ @interfacesocket.pool_update:   Client asked for connection from . Now hand-shaking.
+ @interfacesocket.pool_update:   Handshaking was successful. Added to the client list.
+ @simulation.run: Average timings at MD step       0. t/step: 3.09716e-01
+ @simulation.run: Average timings at MD step     100. t/step: 5.21901e-01
+ @softexit.trigger:  SOFTEXIT CALLED FROM THREAD <_MainThread(MainThread, started 8466012352)>  @ SIMULATION: Exiting cleanly.
+ !W! Soft exit has been requested with message: ' @ SIMULATION: Exiting cleanly. I-PI reports success. Restartable as is: NO.'. Cleaning up.
+ @interfacesocket.close: Shutting down the driver interface.
+ @interfacesocket.close: Problem shutting down the server socket. Will just continue and hope for the best.
+ @simulation.softexit: Saving the latest status at the end of the step
+PLUMED: Timestep: 1000.000000
+PLUMED: KbT has not been set by the MD engine
+PLUMED: It should be set by hand where needed
+PLUMED: Relevant bibliography:
+PLUMED:   [1] The PLUMED consortium, Nat. Methods 16, 670 (2019)
+PLUMED:   [2] Tribello, Bonomi, Branduardi, Camilloni, and Bussi, Comput. Phys. Commun. 185, 604 (2014)
+PLUMED:   [3] Laio and Parrinello, PNAS 99, 12562 (2002)
+PLUMED:   [4] Barducci, Bussi, and Parrinello, Phys. Rev. Lett. 100, 020603 (2008)
+PLUMED: Please read and cite where appropriate!
+PLUMED: Finished setup
+PLUMED:                                               Cycles        Total      Average      Minimum      Maximum
+PLUMED:                                                    1     0.006449     0.006449     0.006449     0.006449
+PLUMED: 1 Prepare dependencies                           121     0.000221     0.000002     0.000001     0.000010
+PLUMED: 2 Sharing data                                   121     0.000754     0.000006     0.000004     0.000123
+PLUMED: 3 Waiting for data                               241     0.000064     0.000000     0.000000     0.000001
+PLUMED: 4 Calculating (forward loop)                     241     0.001484     0.000006     0.000002     0.000049
+PLUMED: 5 Applying (backward loop)                       121     0.000415     0.000003     0.000002     0.000006
+PLUMED: 6 Update                                         120     0.000174     0.000001     0.000001     0.000028

@@ -16,12 +16,16 @@ def test_default_config_matches_spec():
 
     assert config.simulation.checkpoint_stride == 50
     assert config.simulation.prefix == "simulation"
+    assert config.orca.orca_command == "orca"
     assert config.orca.orcablocks == "%pal nprocs 1 end\n%maxcore 2000"
     assert config.orca.nprocs == 1
     assert config.orca.label == "orca_run"
     assert config.advanced.fix_com is False
     assert config.advanced.latency == 0.01
     assert config.advanced.timeout == 600.0
+    assert config.plumed.enabled is False
+    assert config.plumed.input_filename == "plumed.dat"
+    assert config.plumed.compute_work is True
 
 
 def test_default_config_validates_cleanly():
@@ -131,6 +135,34 @@ def test_validation_rejects_aimd_nvt_pile_g():
         template.validate_config(config)
 
 
+def test_validation_rejects_conflicting_plumed_sources(tmp_path):
+    source_path = tmp_path / "plumed.dat"
+    source_path.write_text("UNITS LENGTH=A TIME=fs ENERGY=eV\n")
+    config = make_config()
+    config = replace(
+        config,
+        plumed=replace(
+            config.plumed,
+            source_path=source_path,
+            source_string="UNITS LENGTH=A TIME=fs ENERGY=eV",
+        ),
+    )
+
+    with pytest.raises(template.ValidationError, match="mutually exclusive"):
+        template.validate_config(config)
+
+
+def test_validation_rejects_plumed_bias_nbeads_above_simulation_nbeads():
+    config = make_config()
+    config = replace(
+        config,
+        plumed=replace(config.plumed, enabled=True, bias_nbeads=32),
+    )
+
+    with pytest.raises(template.ValidationError, match="must not exceed"):
+        template.validate_config(config)
+
+
 def test_render_input_xml_for_aimd_nvt():
     config = make_config()
     config = replace(
@@ -162,6 +194,16 @@ def test_render_input_xml_adds_vacuum_cell_for_nonperiodic_system():
     assert "15.0" in (cell.text or "")
 
 
+def test_render_input_xml_marks_init_xyz_as_angstrom():
+    root = ET.fromstring(template.render_input_xml(make_config()))
+
+    init_file = root.find("system/initialize/file")
+
+    assert init_file is not None
+    assert init_file.get("mode") == "xyz"
+    assert init_file.get("units") == "angstrom"
+
+
 def test_render_input_xml_for_pimd_nvt():
     xml = template.render_input_xml(make_config())
     root = ET.fromstring(xml)
@@ -189,6 +231,42 @@ def test_render_input_xml_for_pimd_nvt():
     trajectory = root.find("output/trajectory")
     assert properties is not None and properties.get("filename") is not None
     assert trajectory is not None and trajectory.get("filename") is not None
+
+
+def test_render_input_xml_adds_plumed_forcefield_bias_and_smotion():
+    config = make_config()
+    config = replace(
+        config,
+        plumed=replace(config.plumed, enabled=True),
+    )
+
+    root = ET.fromstring(template.render_input_xml(config))
+
+    ffplumed = root.find("ffplumed")
+    assert ffplumed is not None
+    assert ffplumed.get("name") == "plumed"
+    assert ffplumed.find("file").get("units") == "angstrom"
+    assert ffplumed.findtext("plumed_dat", "").strip() == "plumed.dat"
+    assert ffplumed.findtext("compute_work", "").strip() == "True"
+    assert root.find("system/ensemble/bias/force[@forcefield='plumed']") is not None
+    assert root.find("smotion/metad/metaff") is not None
+
+
+def test_render_input_xml_adds_plumed_extras_interpolation():
+    config = make_config()
+    config = replace(
+        config,
+        plumed=replace(
+            config.plumed,
+            enabled=True,
+            plumed_extras=("cv1", "opes.bias"),
+        ),
+    )
+
+    xml = template.render_input_xml(config)
+
+    assert "<plumed_extras> [ cv1, opes.bias ] </plumed_extras>" in xml
+    assert "<interpolate_extras> [ cv1, opes.bias ] </interpolate_extras>" in xml
 
 
 def test_render_ase_client_contains_orca_profile_and_socketclient():
@@ -232,7 +310,11 @@ def test_render_shell_scripts_includes_submit_helper_variables():
     assert "command -v" in scripts["submit_job.sh"]
     assert "wait_for_socket" in scripts["submit_job.sh"]
     assert "trap cleanup" in scripts["submit_job.sh"]
+    assert "IPI_BIN=" in scripts["submit_job.sh"]
+    assert 'test -n "$IPI_BIN"' in scripts["submit_job.sh"]
     assert "/tmp/ipi_orca_driver" in scripts["run_all.sh"]
+    assert "detect_conda_sh" in scripts["submit_job.sh"]
+    assert "/opt/anaconda3/etc/profile.d/conda.sh" not in scripts["submit_job.sh"]
 
 
 def test_render_shell_scripts_remove_stale_unix_socket():
@@ -252,6 +334,7 @@ def test_write_job_directory_creates_expected_files(tmp_path):
     for name in [
         "input.xml",
         "init.xyz",
+        "plumed.dat",
         "ase_orca_client.py",
         "job_config.json",
         "run_ipi.sh",
@@ -304,6 +387,53 @@ def test_write_job_directory_writes_json_and_exec_permissions(tmp_path):
     assert (job_dir / "submit_job.sh").stat().st_mode & 0o777 == 0o755
 
 
+def test_write_job_directory_writes_default_plumed_template(tmp_path):
+    config = make_config()
+    config = replace(config, job=replace(config.job, work_root=tmp_path, job_name="plumed_job"))
+
+    job_dir = template.write_job_directory(config)
+
+    plumed_dat = (job_dir / "plumed.dat").read_text()
+    assert "PLUMED input template generated" in plumed_dat
+    assert "METAD ARG=d12" in plumed_dat
+
+
+def test_write_job_directory_uses_plumed_source_string(tmp_path):
+    config = make_config()
+    config = replace(
+        config,
+        job=replace(config.job, work_root=tmp_path, job_name="plumed_string_job"),
+        plumed=replace(
+            config.plumed,
+            enabled=True,
+            source_string="UNITS LENGTH=A TIME=fs ENERGY=eV\nPRINT STRIDE=10 ARG=* FILE=COLVAR\n",
+        ),
+    )
+
+    job_dir = template.write_job_directory(config)
+
+    assert (job_dir / "plumed.dat").read_text().startswith("UNITS LENGTH=A")
+
+
+def test_check_environment_imports_plumed_when_enabled(monkeypatch):
+    config = make_config()
+    config = replace(config, plumed=replace(config.plumed, enabled=True))
+    calls = []
+
+    monkeypatch.setattr(template.shutil, "which", lambda token: "/usr/bin/i-pi" if token == "i-pi" else "/usr/bin/orca")
+    monkeypatch.setattr(template, "_resolve_executable_token", lambda command: command)
+
+    def fake_run(args, check):
+        calls.append(args)
+        return None
+
+    monkeypatch.setattr(template.subprocess, "run", fake_run)
+
+    template.check_environment(config)
+
+    assert calls == [[template.sys.executable, "-c", "import ase, plumed"]]
+
+
 def test_run_job_checks_environment_before_writing_directory(monkeypatch):
     config = make_config()
     calls = []
@@ -335,6 +465,21 @@ def test_prepare_socket_path_removes_stale_unix_socket(tmp_path, monkeypatch):
     template._prepare_socket_path(config)
 
     assert not stale_socket.exists()
+
+
+def test_wait_for_socket_unix_mode_uses_path_existence_not_probe_connect(tmp_path, monkeypatch):
+    config = make_config()
+    socket_path = tmp_path / "ipi_orca_driver"
+    socket_path.write_text("")
+
+    monkeypatch.setattr(template, "_unix_socket_path", lambda _config: socket_path)
+
+    def fail_socket(*args, **kwargs):
+        raise AssertionError("unix wait should not open a probe socket")
+
+    monkeypatch.setattr(template.socket, "socket", fail_socket)
+
+    template._wait_for_socket(config, timeout=0.1)
 
 
 def test_run_job_returns_nonzero_if_ipi_exits_with_error(monkeypatch, tmp_path):
@@ -373,6 +518,53 @@ def test_run_job_returns_nonzero_if_ipi_exits_with_error(monkeypatch, tmp_path):
     assert template.run_job(config) == 7
 
 
+def test_run_job_direct_mode_writes_log_files(monkeypatch, tmp_path):
+    config = make_config()
+
+    class FakeIpiProc:
+        def __init__(self):
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    popen_calls = []
+    run_calls = []
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append(kwargs)
+        return FakeIpiProc()
+
+    def fake_run(*args, **kwargs):
+        run_calls.append(kwargs)
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr(template, "check_environment", lambda _config: None)
+    monkeypatch.setattr(template, "write_job_directory", lambda _config: tmp_path)
+    monkeypatch.setattr(template, "_prepare_socket_path", lambda _config: None)
+    monkeypatch.setattr(template, "_wait_for_socket", lambda _config: None)
+    monkeypatch.setattr(template.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(template.subprocess, "run", fake_run)
+
+    assert template.run_job(config) == 0
+    assert (tmp_path / "logs" / "ipi.log").exists()
+    assert (tmp_path / "logs" / "client.log").exists()
+    assert popen_calls and popen_calls[0]["stdout"].name.endswith("logs/ipi.log")
+    assert popen_calls[0]["stderr"] is template.subprocess.STDOUT
+    assert run_calls and run_calls[0]["stdout"].name.endswith("logs/client.log")
+    assert run_calls[0]["stderr"] is template.subprocess.STDOUT
+
+
 def test_check_environment_rejects_non_executable_orca_path(tmp_path, monkeypatch):
     orca_path = tmp_path / "orca"
     orca_path.write_text("#!/bin/sh\nexit 0\n")
@@ -390,6 +582,19 @@ def test_check_environment_rejects_non_executable_orca_path(tmp_path, monkeypatc
 
     with pytest.raises(RuntimeError, match="orca executable"):
         template.check_environment(config)
+
+
+def test_resolve_env_script_prefers_current_python_bin(tmp_path, monkeypatch):
+    fake_python = tmp_path / "python"
+    fake_python.write_text("")
+    fake_i_pi = tmp_path / "i-pi"
+    fake_i_pi.write_text("#!/bin/sh\n")
+    fake_i_pi.chmod(0o755)
+
+    monkeypatch.setattr(template.sys, "executable", str(fake_python))
+    monkeypatch.setattr(template.shutil, "which", lambda _name: "/usr/bin/i-pi")
+
+    assert template._resolve_env_script("i-pi") == str(fake_i_pi)
 
 
 def test_build_arg_parser_rejects_conflicting_modes():

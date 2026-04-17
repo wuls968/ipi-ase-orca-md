@@ -27,6 +27,30 @@
 
 这套模板的目标不是把所有 i-PI 功能都包完，而是把“绝大多数用 ORCA 跑分子 AIMD / PIMD 的常见配置”尽量做得简单、透明、容易改。
 
+## 仓库里有什么
+
+- `ipi_ase_orca_template.py`
+  主模板，绝大多数情况下你只需要改这个文件
+- `tests/test_template.py`
+  回归测试
+- `examples/native_xtb2_wtmetad_5ps.py`
+  一个可直接生成 `Native-XTB2 + WT-Metad` 作业的示例脚本
+- `examples/generated_jobs/native_xtb2_wtmetad_example/`
+  一个已经实际跑过、并且整理过的标准示例目录
+
+## 可移植性和隐私
+
+仓库现在默认不再写死任何个人机器专属路径。
+
+- 默认 `orca_command` 是 `orca`
+- `submit_job.sh` 会优先自动探测 `conda.sh`
+- 示例目录里的结果和日志已经做过路径清理
+
+如果你的 `orca` 不在 `PATH` 上，可以：
+
+- 在配置里把 `orca_command` 改成真实路径
+- 或者运行前设置环境变量 `ORCA_COMMAND=/path/to/orca`
+
 ## 这个项目适合什么
 
 适合：
@@ -123,6 +147,13 @@ cd jobs/h2o_pimd_demo
 sh run_all.sh
 ```
 
+`--run` 现在也会在对应作业目录下写出：
+
+- `logs/ipi.log`
+- `logs/client.log`
+
+所以本地直跑和 `submit_job.sh` 的排错方式已经基本一致了。
+
 ### 5. 用提交辅助脚本启动
 
 更推荐的方式是进入生成目录后运行：
@@ -188,10 +219,12 @@ H -0.758602 0.000000 0.504284
 改这里：
 
 ```python
-orca_command="/Users/a0000/Library/orca_6_1_0/orca"
+orca_command="orca"
 ```
 
-你应该把它改成你机器上真实的 ORCA 主程序路径。
+如果你的 `orca` 已经在 `PATH` 上，直接用这个默认值就可以。
+
+如果没有在 `PATH` 上，你再把它改成你机器上的真实路径。
 
 如果不确定，可以在终端里先查：
 
@@ -354,6 +387,84 @@ sh run_all.sh
 cd jobs/你的作业名
 sh submit_job.sh
 ```
+
+## PLUMED 增强采样怎么用
+
+模板现在已经支持 `i-PI + PLUMED` 的直连模式。
+
+你需要做的事情非常简单：
+
+1. 在配置里把 `plumed.enabled` 设成 `True`
+2. 生成作业目录
+3. 打开生成出来的 `plumed.dat`
+4. 把你自己的 `CV / METAD / OPES / RESTRAINT / PRINT` 写进去
+5. 直接运行 `sh submit_job.sh` 或 `python ... --run`
+
+也就是说，Python 模板负责把：
+
+- `ffplumed`
+- `ensemble/bias`
+- 可选 `smotion metad`
+
+这些 `i-PI` 侧连接都提前接好；你主要改的还是 `plumed.dat` 本身。
+
+### 最小配置长什么样
+
+如果你希望启用增强采样，至少需要：
+
+```python
+plumed=PlumedSettings(
+    enabled=True,
+    input_filename="plumed.dat",
+    source_path=None,
+    source_string=None,
+    bias_name="plumed",
+    bias_nbeads=1,
+    plumed_step=0,
+    compute_work=True,
+    use_metad_smotion=True,
+    plumed_extras=(),
+)
+```
+
+生成作业后，你会看到一个：
+
+- `plumed.dat`
+
+它可以直接改。
+
+### 一个现成例子
+
+项目里已经带了一个可直接参考的示例：
+
+- `examples/native_xtb2_wtmetad_5ps.py`
+
+这个例子使用：
+
+- `ORCA Native-XTB2`
+- `H2O`
+- `WT-Metad`
+- `ANGLE ATOMS=2,1,3` 作为 CV
+
+建议这样验证：
+
+```sh
+conda run -n ipi python examples/native_xtb2_wtmetad_5ps.py --run --smoke
+```
+
+如果你想确认第一颗 hill 已经写入：
+
+```sh
+conda run -n ipi python examples/native_xtb2_wtmetad_5ps.py --run --hill-smoke
+```
+
+因为这个例子的默认 `PACE=100`，所以 `120` 步短跑足够看到第一条 `HILLS` 记录。
+
+仓库里现在也只保留了一个整理好的生成示例目录：
+
+- `examples/generated_jobs/native_xtb2_wtmetad_example`
+
+这个目录不是调试残留，而是一个已经实际跑过、适合直接参考文件结构和结果格式的标准示例。
 
 ## AIMD 和 PIMD 分别怎么设
 
@@ -562,7 +673,6 @@ sh submit_job.sh
 
 这个脚本顶部有几个你最可能改的变量：
 
-- `CONDA_SH`
 - `CONDA_ENV`
 - `ORCA_COMMAND`
 - `JOB_LAUNCHER_PREFIX`
@@ -571,7 +681,6 @@ sh submit_job.sh
 
 通常只要保证：
 
-- `CONDA_SH` 正确
 - `CONDA_ENV=ipi`
 
 然后直接：
@@ -710,15 +819,15 @@ cell=(20.0, 20.0, 20.0)
 
 最常见原因是：
 
-- `CONDA_SH` 路径不对
+- 当前 shell 环境里找不到 `conda`
 
-把脚本顶部的：
+现在脚本会先自动探测 `conda.sh`。
+
+如果你的环境比较特殊，再手动指定：
 
 ```sh
-CONDA_SH=...
+CONDA_SH=/path/to/conda.sh sh submit_job.sh
 ```
-
-改成你机器上真实的 `conda.sh` 路径。
 
 ### 6. 中断后重跑失败
 

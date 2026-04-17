@@ -1,0 +1,68 @@
+{
+  "advanced": {
+    "custom_xml_overrides": "",
+    "ffsocket_pbc": false,
+    "fix_com": true,
+    "initial_velocities": "none",
+    "job_launcher_prefix": "",
+    "latency": 0.01,
+    "timeout": 600.0,
+    "velocity_temperature": 300.0
+  },
+  "job": {
+    "clean_existing": true,
+    "job_name": "native_xtb2_wtmetad_example",
+    "run_mode": "write_only",
+    "socket_address": "orca_driver",
+    "socket_mode": "unix",
+    "socket_port": 31415,
+    "work_root": "examples/generated_jobs"
+  },
+  "orca": {
+    "extra_keywords": "",
+    "label": "orca_native_xtb2",
+    "maxcore": 1000,
+    "nprocs": 1,
+    "orca_command": "orca",
+    "orcablocks": "%pal nprocs 1 end\n%maxcore 1000",
+    "orcasimpleinput": "Native-XTB2"
+  },
+  "plumed": {
+    "bias_name": "plumed",
+    "bias_nbeads": 1,
+    "compute_work": true,
+    "enabled": true,
+    "input_filename": "plumed.dat",
+    "plumed_extras": [
+      "theta",
+      "metad.bias"
+    ],
+    "plumed_step": 0,
+    "source_path": null,
+    "source_string": "UNITS LENGTH=A TIME=fs ENERGY=eV\n\ntheta: ANGLE ATOMS=2,1,3\nMETAD ARG=theta SIGMA=0.08 HEIGHT=0.001 PACE=100 BIASFACTOR=10 TEMP=300 LABEL=metad FILE=HILLS\nPRINT STRIDE=50 ARG=theta,metad.bias FILE=COLVAR\n",
+    "use_metad_smotion": true
+  },
+  "simulation": {
+    "checkpoint_stride": 500,
+    "ensemble": "nvt",
+    "nbeads": 1,
+    "prefix": "native_xtb2_wtmetad_example",
+    "properties_stride": 50,
+    "seed": 12345,
+    "simulation_kind": "aimd",
+    "tau_fs": 10.0,
+    "temperature": 300.0,
+    "thermostat_mode": "langevin",
+    "timestep_fs": 1.0,
+    "total_steps": 120,
+    "trajectory_stride": 100
+  },
+  "structure": {
+    "cell": null,
+    "charge": 0,
+    "multiplicity": 1,
+    "pbc": false,
+    "xyz_path": null,
+    "xyz_string": "3\nwater\nO 0.000000 0.000000 0.000000\nH 0.758602 0.000000 0.504284\nH -0.758602 0.000000 0.504284\n"
+  }
+}

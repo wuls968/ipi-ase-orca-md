@@ -1,0 +1,4 @@
+#! FIELDS time theta sigma_theta height biasf
+#! SET multivariate false
+#! SET kerneltype stretched-gaussian
+                 100000      1.767314160375584                   0.08   0.001111111111111111                     10

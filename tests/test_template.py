@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -7,18 +8,25 @@ import pytest
 import ipi_ase_orca_template as template
 
 
+TEST_XYZ_PATH = (Path(__file__).resolve().parents[1] / "examples" / "generated_jobs" / "native_xtb2_wtmetad_example" / "init.xyz").resolve()
+
+
 def make_config():
-    return template.build_default_config()
+    config = template.build_default_config()
+    return replace(config, structure=replace(config.structure, xyz_path=TEST_XYZ_PATH))
 
 
 def test_default_config_matches_spec():
     config = make_config()
 
+    assert config.job.job_name == template.USER_JOB_NAME
+    assert config.structure.xyz_path == TEST_XYZ_PATH
+    assert config.simulation.total_steps == template.USER_TOTAL_STEPS
     assert config.simulation.checkpoint_stride == 50
     assert config.simulation.prefix == "simulation"
-    assert config.orca.orca_command == "orca"
-    assert config.orca.orcablocks == "%pal nprocs 1 end\n%maxcore 2000"
-    assert config.orca.nprocs == 1
+    assert config.orca.orca_command == template.USER_ORCA_COMMAND
+    assert config.orca.orcablocks == template.USER_ORCA_BLOCKS
+    assert config.orca.nprocs == template.USER_ORCA_NPROCS
     assert config.orca.label == "orca_run"
     assert config.advanced.fix_com is False
     assert config.advanced.latency == 0.01
@@ -40,14 +48,25 @@ def test_validation_rejects_empty_orca_command():
         template.validate_config(config)
 
 
-def test_validation_requires_geometry_source():
+def test_validation_requires_absolute_xyz_path():
     config = make_config()
     config = replace(
         config,
-        structure=replace(config.structure, xyz_path=None, xyz_string=None),
+        structure=replace(config.structure, xyz_path=Path("relative.xyz")),
     )
 
-    with pytest.raises(template.ValidationError, match="geometry"):
+    with pytest.raises(template.ValidationError, match="absolute path"):
+        template.validate_config(config)
+
+
+def test_validation_requires_existing_xyz_file():
+    config = make_config()
+    config = replace(
+        config,
+        structure=replace(config.structure, xyz_path=Path("/definitely/missing/file.xyz")),
+    )
+
+    with pytest.raises(template.ValidationError, match="does not exist"):
         template.validate_config(config)
 
 
@@ -375,7 +394,7 @@ def test_write_job_directory_writes_json_and_exec_permissions(tmp_path):
     config = replace(
         config,
         job=replace(config.job, work_root=tmp_path, job_name="json_job"),
-        structure=replace(config.structure, xyz_path=xyz_path, xyz_string=None),
+        structure=replace(config.structure, xyz_path=xyz_path),
     )
 
     job_dir = template.write_job_directory(config)
@@ -423,7 +442,7 @@ def test_check_environment_imports_plumed_when_enabled(monkeypatch):
     monkeypatch.setattr(template.shutil, "which", lambda token: "/usr/bin/i-pi" if token == "i-pi" else "/usr/bin/orca")
     monkeypatch.setattr(template, "_resolve_executable_token", lambda command: command)
 
-    def fake_run(args, check):
+    def fake_run(args, capture_output, text, check):
         calls.append(args)
         return None
 
@@ -432,6 +451,26 @@ def test_check_environment_imports_plumed_when_enabled(monkeypatch):
     template.check_environment(config)
 
     assert calls == [[template.sys.executable, "-c", "import ase, plumed"]]
+
+
+def test_check_environment_reports_import_failures_with_job_dir(monkeypatch, tmp_path):
+    config = make_config()
+    config = replace(config, job=replace(config.job, work_root=tmp_path, job_name="doctor_job"))
+
+    monkeypatch.setattr(template.shutil, "which", lambda token: "/usr/bin/i-pi" if token == "i-pi" else "/usr/bin/orca")
+    monkeypatch.setattr(template, "_resolve_executable_token", lambda command: command)
+
+    def fake_run(*args, **kwargs):
+        raise template.subprocess.CalledProcessError(
+            returncode=1,
+            cmd=args[0],
+            stderr="ModuleNotFoundError: No module named 'ase'\n",
+        )
+
+    monkeypatch.setattr(template.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="doctor_job"):
+        template.check_environment(config)
 
 
 def test_run_job_checks_environment_before_writing_directory(monkeypatch):
@@ -515,7 +554,8 @@ def test_run_job_returns_nonzero_if_ipi_exits_with_error(monkeypatch, tmp_path):
         lambda *args, **kwargs: type("Result", (), {"returncode": 0})(),
     )
 
-    assert template.run_job(config) == 7
+    with pytest.raises(RuntimeError, match="i-pi exited with return code 7"):
+        template.run_job(config)
 
 
 def test_run_job_direct_mode_writes_log_files(monkeypatch, tmp_path):
@@ -565,6 +605,54 @@ def test_run_job_direct_mode_writes_log_files(monkeypatch, tmp_path):
     assert run_calls[0]["stderr"] is template.subprocess.STDOUT
 
 
+def test_run_job_reports_runtime_failure_with_job_dir_and_log_excerpt(monkeypatch, tmp_path):
+    config = make_config()
+    (tmp_path / config.orca.label).mkdir(parents=True)
+    (tmp_path / config.orca.label / "orca.out").write_text("ORCA terminated with an error\n")
+    (tmp_path / config.orca.label / "orca.err").write_text("Please inspect the SCF settings\n")
+
+    class FakeIpiProc:
+        def __init__(self):
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_client_run(*args, **kwargs):
+        kwargs["stdout"].write("client failed to connect to ORCA\nsecond line\n")
+        kwargs["stdout"].flush()
+        return type("Result", (), {"returncode": 23})()
+
+    monkeypatch.setattr(template, "check_environment", lambda _config: None)
+    monkeypatch.setattr(template, "write_job_directory", lambda _config: tmp_path)
+    monkeypatch.setattr(template, "_prepare_socket_path", lambda _config: None)
+    monkeypatch.setattr(template, "_wait_for_socket", lambda _config: None)
+    monkeypatch.setattr(template, "_resolve_env_script", lambda name: "/usr/bin/i-pi")
+    monkeypatch.setattr(template.subprocess, "Popen", lambda *args, **kwargs: FakeIpiProc())
+    monkeypatch.setattr(template.subprocess, "run", fake_client_run)
+
+    with pytest.raises(RuntimeError, match="client exited with return code 23") as excinfo:
+        template.run_job(config)
+
+    message = str(excinfo.value)
+    assert str(tmp_path) in message
+    assert "logs/client.log" in message
+    assert "client failed to connect to ORCA" in message
+    assert "orca_run/orca.out" in message
+    assert "ORCA terminated with an error" in message
+    assert "Please inspect the SCF settings" in message
+
+
 def test_check_environment_rejects_non_executable_orca_path(tmp_path, monkeypatch):
     orca_path = tmp_path / "orca"
     orca_path.write_text("#!/bin/sh\nexit 0\n")
@@ -601,7 +689,7 @@ def test_build_arg_parser_rejects_conflicting_modes():
     parser = template.build_arg_parser()
 
     with pytest.raises(SystemExit):
-        parser.parse_args(["--write-only", "--run"])
+        parser.parse_args(["--write-only", "--print-config"])
 
 
 def test_main_rejects_conflicting_modes(tmp_path):
@@ -620,3 +708,50 @@ def test_main_write_only_returns_zero_and_creates_job(tmp_path):
 
     assert result == 0
     assert (tmp_path / "cli_job" / "input.xml").exists()
+
+
+def test_main_print_config_outputs_json(capsys, tmp_path):
+    config = make_config()
+    config = replace(config, job=replace(config.job, work_root=tmp_path, job_name="print_job"))
+
+    result = template.main(["--print-config"], config=config)
+    output = json.loads(capsys.readouterr().out)
+
+    assert result == 0
+    assert output["job"]["job_name"] == "print_job"
+    assert output["job"]["work_root"] == str(tmp_path)
+
+
+def test_main_doctor_reports_success(capsys, monkeypatch, tmp_path):
+    config = make_config()
+    config = replace(config, job=replace(config.job, work_root=tmp_path, job_name="doctor_job"))
+
+    monkeypatch.setattr(template, "_resolve_env_script", lambda name: f"/resolved/{name}")
+    monkeypatch.setattr(template, "_resolve_executable_token", lambda command: "/resolved/orca")
+    monkeypatch.setattr(template.subprocess, "run", lambda *args, **kwargs: None)
+
+    result = template.main(["--doctor"], config=config)
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "config validation" in output
+    assert "Job directory:" in output
+    assert "doctor_job" in output
+    assert "/resolved/i-pi" in output
+
+
+def test_main_reports_validation_failure_with_edit_hint(capsys, tmp_path):
+    config = make_config()
+    config = replace(
+        config,
+        job=replace(config.job, work_root=tmp_path, job_name="broken_job"),
+        structure=replace(config.structure, xyz_path=Path("relative.xyz")),
+    )
+
+    result = template.main(["--write-only"], config=config)
+    error_output = capsys.readouterr().err
+
+    assert result == 1
+    assert "Validation failed" in error_output
+    assert "broken_job" in error_output
+    assert "USER TUNING SECTION" in error_output

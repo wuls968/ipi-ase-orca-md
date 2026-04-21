@@ -12,13 +12,49 @@ import subprocess
 import sys
 import time
 import tempfile
+from typing import TextIO
 
 
 DEFAULT_NONPERIODIC_CELL_ANGSTROM = 15.0
 
+# ============================================================================
+# USER TUNING SECTION
+# Edit these values first. Most researchers do not need to touch the template
+# machinery below this block.
+# ============================================================================
+USER_JOB_NAME = "h2o_pimd_demo"
+USER_WORK_ROOT = Path("jobs")
+USER_STRUCTURE_XYZ_PATH = (
+    Path(__file__).resolve().parent / "examples" / "generated_jobs" / "native_xtb2_wtmetad_example" / "init.xyz"
+).resolve()
+USER_CHARGE = 0
+USER_MULTIPLICITY = 1
+USER_SIMULATION_KIND = "pimd"
+USER_ENSEMBLE = "nvt"
+USER_NBEADS = 16
+USER_TEMPERATURE_K = 300.0
+USER_TIMESTEP_FS = 0.5
+USER_TOTAL_STEPS = 20
+USER_THERMOSTAT_MODE = "pile_g"
+USER_ORCA_COMMAND = "orca"
+USER_ORCA_SIMPLEINPUT = "B3LYP def2-SVP TightSCF"
+USER_ORCA_NPROCS = 1
+USER_ORCA_MAXCORE_MB = 2000
+USER_ORCA_BLOCKS = f"%pal nprocs {USER_ORCA_NPROCS} end\n%maxcore {USER_ORCA_MAXCORE_MB}"
+USER_JOB_LAUNCHER_PREFIX = ""
+USER_PLUMED_ENABLED = False
+
 
 class ValidationError(ValueError):
     """Raised when the template configuration is internally inconsistent."""
+
+
+class EnvironmentCheckError(RuntimeError):
+    """Raised when the local runtime environment is not ready for this template."""
+
+
+class JobExecutionError(RuntimeError):
+    """Raised when a generated job fails during execution."""
 
 
 @dataclass(frozen=True)
@@ -34,8 +70,7 @@ class JobSettings:
 
 @dataclass(frozen=True)
 class StructureSettings:
-    xyz_path: Path | None
-    xyz_string: str | None
+    xyz_path: Path
     charge: int
     multiplicity: int
     cell: tuple[float, float, float] | None
@@ -109,8 +144,8 @@ class TemplateConfig:
 def build_default_config() -> TemplateConfig:
     return TemplateConfig(
         job=JobSettings(
-            job_name="h2o_pimd_demo",
-            work_root=Path("jobs"),
+            job_name=USER_JOB_NAME,
+            work_root=USER_WORK_ROOT,
             run_mode="write_only",
             clean_existing=True,
             socket_mode="unix",
@@ -118,27 +153,21 @@ def build_default_config() -> TemplateConfig:
             socket_port=31415,
         ),
         structure=StructureSettings(
-            xyz_path=None,
-            xyz_string="""3
-water
-O 0.000000 0.000000 0.000000
-H 0.758602 0.000000 0.504284
-H -0.758602 0.000000 0.504284
-""",
-            charge=0,
-            multiplicity=1,
+            xyz_path=USER_STRUCTURE_XYZ_PATH,
+            charge=USER_CHARGE,
+            multiplicity=USER_MULTIPLICITY,
             cell=None,
             pbc=False,
         ),
         simulation=SimulationSettings(
-            simulation_kind="pimd",
-            ensemble="nvt",
-            nbeads=16,
-            temperature=300.0,
-            timestep_fs=0.5,
-            total_steps=20,
+            simulation_kind=USER_SIMULATION_KIND,
+            ensemble=USER_ENSEMBLE,
+            nbeads=USER_NBEADS,
+            temperature=USER_TEMPERATURE_K,
+            timestep_fs=USER_TIMESTEP_FS,
+            total_steps=USER_TOTAL_STEPS,
             seed=12345,
-            thermostat_mode="pile_g",
+            thermostat_mode=USER_THERMOSTAT_MODE,
             tau_fs=100.0,
             properties_stride=1,
             trajectory_stride=10,
@@ -146,11 +175,11 @@ H -0.758602 0.000000 0.504284
             prefix="simulation",
         ),
         orca=OrcaSettings(
-            orca_command="orca",
-            orcasimpleinput="B3LYP def2-SVP TightSCF",
-            orcablocks="%pal nprocs 1 end\n%maxcore 2000",
-            nprocs=1,
-            maxcore=2000,
+            orca_command=USER_ORCA_COMMAND,
+            orcasimpleinput=USER_ORCA_SIMPLEINPUT,
+            orcablocks=USER_ORCA_BLOCKS,
+            nprocs=USER_ORCA_NPROCS,
+            maxcore=USER_ORCA_MAXCORE_MB,
             label="orca_run",
             extra_keywords="",
         ),
@@ -162,10 +191,10 @@ H -0.758602 0.000000 0.504284
             initial_velocities="thermal",
             velocity_temperature=300.0,
             custom_xml_overrides="",
-            job_launcher_prefix="",
+            job_launcher_prefix=USER_JOB_LAUNCHER_PREFIX,
         ),
         plumed=PlumedSettings(
-            enabled=False,
+            enabled=USER_PLUMED_ENABLED,
             input_filename="plumed.dat",
             source_path=None,
             source_string=None,
@@ -191,12 +220,14 @@ def _require_in(value: str, field_name: str, allowed: set[str]) -> None:
 
 
 def validate_config(config: TemplateConfig) -> None:
-    geometry_sources = [
-        config.structure.xyz_path,
-        config.structure.xyz_string.strip() if config.structure.xyz_string else None,
-    ]
-    if not any(geometry_sources):
-        raise ValidationError("geometry source must be provided")
+    if not isinstance(config.structure.xyz_path, Path):
+        raise ValidationError("structure.xyz_path must be a pathlib.Path pointing to an absolute xyz file")
+    if not config.structure.xyz_path.is_absolute():
+        raise ValidationError("structure.xyz_path must be an absolute path")
+    if config.structure.xyz_path.suffix.lower() != ".xyz":
+        raise ValidationError("structure.xyz_path must point to a .xyz file")
+    if not config.structure.xyz_path.is_file():
+        raise ValidationError(f"structure.xyz_path does not exist: {config.structure.xyz_path}")
     if config.structure.pbc and config.structure.cell is None:
         raise ValidationError("cell must be provided when pbc is True")
 
@@ -691,10 +722,7 @@ def render_shell_scripts(config: TemplateConfig) -> dict[str, str]:
 
 
 def _structure_text(config: TemplateConfig) -> str:
-    if config.structure.xyz_path is not None:
-        return config.structure.xyz_path.read_text()
-
-    xyz_text = config.structure.xyz_string or ""
+    xyz_text = config.structure.xyz_path.read_text()
     return xyz_text if xyz_text.endswith("\n") else xyz_text + "\n"
 
 
@@ -712,6 +740,84 @@ def _jsonable_value(value):
 
 def _to_jsonable(config: TemplateConfig) -> dict:
     return _jsonable_value(asdict(config))
+
+
+def _job_dir(config: TemplateConfig) -> Path:
+    return config.job.work_root / config.job.job_name
+
+
+def _indent_block(text: str, prefix: str = "    ") -> str:
+    return "\n".join(f"{prefix}{line}" for line in text.splitlines())
+
+
+def _tail_text(path: Path, max_lines: int = 12) -> str | None:
+    if not path.exists():
+        return None
+
+    text = path.read_text(errors="replace").strip()
+    if not text:
+        return "(log is empty)"
+    return "\n".join(text.splitlines()[-max_lines:])
+
+
+def _format_validation_error(config: TemplateConfig, exc: ValidationError) -> str:
+    return "\n".join(
+        [
+            f"Validation failed: {exc}",
+            f"Job directory: {_job_dir(config)}",
+            "Edit the USER TUNING SECTION near the top of ipi_ase_orca_template.py and try again.",
+        ]
+    )
+
+
+def _format_environment_error(
+    config: TemplateConfig,
+    summary: str,
+    *,
+    hints: tuple[str, ...] = (),
+    excerpt: str | None = None,
+) -> str:
+    lines = [
+        f"Environment check failed: {summary}",
+        f"Job directory: {_job_dir(config)}",
+    ]
+    for hint in hints:
+        lines.append(f"Hint: {hint}")
+    if excerpt:
+        lines.append("Relevant output:")
+        lines.append(_indent_block(excerpt))
+    return "\n".join(lines)
+
+
+def _format_run_failure(
+    config: TemplateConfig,
+    job_dir: Path,
+    summary: str,
+    *,
+    hints: tuple[str, ...] = (),
+) -> str:
+    client_log = job_dir / "logs" / "client.log"
+    ipi_log = job_dir / "logs" / "ipi.log"
+    orca_dir = job_dir / config.orca.label
+    orca_out = orca_dir / "orca.out"
+    orca_err = orca_dir / "orca.err"
+    lines = [
+        f"Run failed: {summary}",
+        f"Job directory: {job_dir}",
+        f"Inspect client log: {client_log}",
+        f"Inspect i-PI log: {ipi_log}",
+        f"Inspect ORCA output: {orca_out}",
+        f"Inspect ORCA stderr: {orca_err}",
+    ]
+    for hint in hints:
+        lines.append(f"Hint: {hint}")
+    for log_path in (client_log, ipi_log, orca_out, orca_err):
+        excerpt = _tail_text(log_path)
+        if excerpt is None:
+            continue
+        lines.append(f"Recent lines from {log_path.relative_to(job_dir)}:")
+        lines.append(_indent_block(excerpt))
+    return "\n".join(lines)
 
 
 def _write_job_directory_contents(job_dir: Path, config: TemplateConfig) -> None:
@@ -791,17 +897,69 @@ def _prepare_socket_path(config: TemplateConfig) -> None:
         socket_path.unlink()
 
 
-def check_environment(config: TemplateConfig) -> None:
+def inspect_environment(config: TemplateConfig) -> dict[str, str]:
     validate_config(config)
 
-    _resolve_env_script("i-pi")
+    try:
+        i_pi_executable = _resolve_env_script("i-pi")
+    except RuntimeError as exc:
+        raise EnvironmentCheckError(
+            _format_environment_error(
+                config,
+                str(exc),
+                hints=(
+                    "Activate the conda environment that provides i-pi, for example: conda activate ipi",
+                ),
+            )
+        ) from exc
 
-    _resolve_executable_token(config.orca.orca_command)
+    try:
+        orca_executable = _resolve_executable_token(config.orca.orca_command)
+    except RuntimeError as exc:
+        raise EnvironmentCheckError(
+            _format_environment_error(
+                config,
+                str(exc),
+                hints=(
+                    "Update USER_ORCA_COMMAND in the USER TUNING SECTION or put ORCA on PATH.",
+                ),
+            )
+        ) from exc
 
     imports = "import ase"
     if config.plumed.enabled:
         imports += ", plumed"
-    subprocess.run([sys.executable, "-c", imports], check=True)
+    try:
+        subprocess.run(
+            [sys.executable, "-c", imports],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        excerpt = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise EnvironmentCheckError(
+            _format_environment_error(
+                config,
+                f"python import check failed for `{imports}`",
+                hints=(
+                    "Activate the expected conda environment first: conda activate ipi",
+                    "Install the missing package in that environment, for example: python -m pip install ase",
+                ),
+                excerpt=excerpt,
+            )
+        ) from exc
+
+    return {
+        "i-pi": i_pi_executable,
+        "orca": orca_executable,
+        "python": sys.executable,
+        "imports": imports.replace("import ", ""),
+    }
+
+
+def check_environment(config: TemplateConfig) -> None:
+    inspect_environment(config)
 
 
 def _wait_for_socket(config: TemplateConfig, timeout: float | None = None) -> None:
@@ -846,7 +1004,6 @@ def run_job(config: TemplateConfig) -> int:
             stdout=ipi_log,
             stderr=subprocess.STDOUT,
         )
-        client_proc = None
         try:
             _wait_for_socket(config)
             client_proc = subprocess.run(
@@ -857,14 +1014,53 @@ def run_job(config: TemplateConfig) -> int:
                 stderr=subprocess.STDOUT,
             )
             if client_proc.returncode != 0:
-                return client_proc.returncode
+                raise JobExecutionError(
+                    _format_run_failure(
+                        config,
+                        job_dir,
+                        f"ASE ORCA client exited with return code {client_proc.returncode}",
+                        hints=(
+                            "The client log usually shows Python, ASE, ORCA, or socket connection failures.",
+                        ),
+                    )
+                )
             grace_timeout = max(5.0, min(config.advanced.timeout, 30.0))
             try:
-                return i_pi_proc.wait(timeout=grace_timeout)
+                ipi_returncode = i_pi_proc.wait(timeout=grace_timeout)
             except subprocess.TimeoutExpired as exc:
-                raise RuntimeError(
-                    f"i-pi did not exit cleanly within {grace_timeout:.1f}s after the client finished"
+                raise JobExecutionError(
+                    _format_run_failure(
+                        config,
+                        job_dir,
+                        f"i-pi did not exit cleanly within {grace_timeout:.1f}s after the client finished",
+                        hints=(
+                            "Check whether the client finished before i-PI flushed its final step or checkpoint.",
+                        ),
+                    )
                 ) from exc
+            if ipi_returncode != 0:
+                raise JobExecutionError(
+                    _format_run_failure(
+                        config,
+                        job_dir,
+                        f"i-pi exited with return code {ipi_returncode}",
+                        hints=(
+                            "The i-PI log usually shows XML parsing, socket, or runtime integration problems.",
+                        ),
+                    )
+                )
+            return 0
+        except TimeoutError as exc:
+            raise JobExecutionError(
+                _format_run_failure(
+                    config,
+                    job_dir,
+                    str(exc),
+                    hints=(
+                        "If the socket never came up, inspect logs/ipi.log first and confirm the ORCA client can start.",
+                    ),
+                )
+            ) from exc
         finally:
             if i_pi_proc.poll() is None:
                 i_pi_proc.terminate()
@@ -876,11 +1072,33 @@ def run_job(config: TemplateConfig) -> int:
             _prepare_socket_path(config)
 
 
+def print_config(config: TemplateConfig, out: TextIO | None = None) -> None:
+    destination = sys.stdout if out is None else out
+    destination.write(json.dumps(_to_jsonable(config), indent=2, sort_keys=True) + "\n")
+
+
+def doctor(config: TemplateConfig, out: TextIO | None = None) -> int:
+    destination = sys.stdout if out is None else out
+    environment = inspect_environment(config)
+    lines = [
+        f"Job directory: {_job_dir(config)}",
+        "[ok] config validation",
+        f"[ok] i-pi: {environment['i-pi']}",
+        f"[ok] orca: {environment['orca']}",
+        f"[ok] python: {environment['python']}",
+        f"[ok] imports: {environment['imports']}",
+    ]
+    destination.write("\n".join(lines) + "\n")
+    return 0
+
+
 def build_arg_parser() -> ArgumentParser:
     parser = ArgumentParser()
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--write-only", action="store_true")
     mode.add_argument("--run", action="store_true")
+    mode.add_argument("--doctor", action="store_true")
+    mode.add_argument("--print-config", action="store_true")
     return parser
 
 
@@ -888,11 +1106,25 @@ def main(argv=None, *, config=None) -> int:
     args = build_arg_parser().parse_args(argv)
     active = config if config is not None else build_default_config()
 
-    if args.run:
-        return run_job(active)
+    try:
+        if args.print_config:
+            print_config(active)
+            return 0
 
-    write_job_directory(active)
-    return 0
+        if args.doctor:
+            return doctor(active)
+
+        if args.run:
+            return run_job(active)
+
+        write_job_directory(active)
+        return 0
+    except ValidationError as exc:
+        print(_format_validation_error(active, exc), file=sys.stderr)
+        return 1
+    except (EnvironmentCheckError, JobExecutionError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
